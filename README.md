@@ -8,3 +8,429 @@
 ``` bash
 pip install cjm_transcription_core
 ```
+
+## Project Structure
+
+    nbs/
+    ├── boundaries.ipynb # Wall-clock-aware segment boundary computation: group VAD speech chunks into segments cut at silence-gap midpoints.
+    ├── cli.ipynb        # The CLI driver — the workflow core's first (and currently only) frontend.
+    ├── models.ipynb     # Data shapes for the transcription pipeline: run configuration + the run-manifest result containers.
+    └── pipeline.ipynb   # The headless transcription pipeline: VAD analysis → boundary computation → segment cutting → per-segment model-input conversion → transcription, composed over capability workers via the substrate's `JobQueue`.
+
+Total: 4 notebooks
+
+## Module Dependencies
+
+``` mermaid
+graph LR
+    boundaries["boundaries<br/>boundaries"]
+    cli["cli<br/>cli"]
+    models["models<br/>models"]
+    pipeline["pipeline<br/>pipeline"]
+
+    cli --> models
+    cli --> pipeline
+    pipeline --> models
+    pipeline --> boundaries
+```
+
+*4 cross-module dependencies detected*
+
+## CLI Reference
+
+No CLI commands found in this project.
+
+## Module Overview
+
+Detailed documentation for each module in the project:
+
+### boundaries (`boundaries.ipynb`)
+
+> Wall-clock-aware segment boundary computation: group VAD speech chunks
+> into segments cut at silence-gap midpoints.
+
+#### Import
+
+``` python
+from cjm_transcription_core.boundaries import (
+    compute_segment_boundaries
+)
+```
+
+#### Functions
+
+``` python
+def compute_segment_boundaries(
+    vad_chunks: List[Dict[str, float]],  # [{start, end, ...}, ...] sorted by start
+    max_segment_duration: float,         # Target max wall-clock segment length in seconds
+    audio_duration: float,               # Full audio duration in seconds
+) -> List[Dict[str, float]]:  # [{start, end}, ...] covering [0, audio_duration]
+    """
+    Group VAD chunks into segments cut at silence-gap midpoints.
+    
+    **Wall-clock-aware, pre-emptive cuts.** `max_segment_duration` caps the
+    wall-clock duration of each output segment (not the speech-only duration
+    within it) — matching the downstream forced-alignment constraint, which
+    operates on the resulting audio file's length.
+    
+    Algorithm:
+      1. If audio_duration <= max_segment_duration or no chunks: single segment
+         covering [0, audio_duration].
+      2. Walk chunks sequentially. For each chunk, check whether accepting it
+         would push the in-progress segment's wall-clock duration over max. If
+         so AND we already have content: cut **before** this chunk at the
+         silence-gap midpoint between the previous chunk's end and this chunk's
+         start (chunks that abut with no gap cut exactly at the previous
+         chunk's end).
+      3. The final segment extends to audio_duration.
+    
+    **Wall-clock invariant.** Every NON-FINAL segment's wall-clock duration is
+    <= max_segment_duration. The final segment may exceed max only because it
+    extends to audio_duration to cover trailing silence. A single VAD chunk
+    whose own duration exceeds max forms a segment of its native length —
+    speech is never split mid-chunk.
+    """
+```
+
+### cli (`cli.ipynb`)
+
+> The CLI driver — the workflow core’s first (and currently only)
+> frontend.
+
+#### Import
+
+``` python
+from cjm_transcription_core.cli import (
+    logger,
+    build_parser,
+    load_capabilities,
+    run_command,
+    main
+)
+```
+
+#### Functions
+
+``` python
+def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
+    "Build the CLI parser (subcommands: run)."
+```
+
+``` python
+def load_capabilities(
+    manager: PluginManager,   # Freshly constructed manager
+    instance_ids: List[str],  # Capability names to load (default instances)
+) -> None
+    "Discover manifests + load each requested capability (default instance)."
+```
+
+``` python
+async def run_command(
+    args: argparse.Namespace,  # Parsed CLI arguments for the `run` subcommand
+) -> int:  # Process exit code (0 = all sources completed)
+    "Execute the `run` subcommand: full pipeline over the given audio files."
+```
+
+``` python
+def main(
+    argv: Optional[List[str]] = None,  # Argument list override (None = sys.argv)
+) -> int:  # Process exit code
+    "CLI entry point (console script: `cjm-transcription-core`)."
+```
+
+### models (`models.ipynb`)
+
+> Data shapes for the transcription pipeline: run configuration + the
+> run-manifest result containers.
+
+#### Import
+
+``` python
+from cjm_transcription_core.models import (
+    PipelineConfig,
+    SegmentRecord,
+    SourceResult,
+    RunManifest,
+    new_run_id
+)
+```
+
+#### Functions
+
+``` python
+def new_run_id() -> str:  # e.g. "run_20260607_153000_1a2b3c4d"
+    "Generate a unique, sortable run id."
+```
+
+#### Classes
+
+``` python
+@dataclass
+class PipelineConfig:
+    "Configuration for one transcription pipeline run."
+    
+    vad_plugin: str = 'cjm-media-plugin-silero-vad'  # VAD capability instance id
+    ffmpeg_plugin: str = 'cjm-media-plugin-ffmpeg'  # Convert/segment capability instance id
+    transcriber_plugin: str = 'cjm-transcription-plugin-whisper'  # Transcription capability instance id
+    max_segment_duration: float = 300.0  # Wall-clock cap per segment in seconds (pre-emptive cuts)
+    sample_rate: int = 16000  # Model-input sample rate for the per-segment convert step
+    channels: int = 1  # Model-input channel count
+    force: bool = False  # Bypass capability-side caches (VAD + transcription)
+    assume_yes: bool = False  # Auto-accept HITL seams (headless / corpus-generation mode)
+    
+    def to_dict(self) -> Dict[str, Any]:  # Plain-dict snapshot for the run manifest
+        "Serialize to a plain dict."
+```
+
+``` python
+@dataclass
+class SegmentRecord:
+    "One transcribed segment of a source audio file."
+    
+    index: int  # 0-based position within the source
+    start: float  # Segment start in source-audio seconds
+    end: float  # Segment end in source-audio seconds
+    duration: float  # Wall-clock segment duration in seconds
+    segment_path: str  # Cut audio file (source codec) from ffmpeg `segment_audio`
+    model_input_path: str  # Model-ready WAV from the per-segment `convert` step
+    job_id: str  # Provenance job id passed to the transcriber (keys its DB row)
+    text: str  # Transcribed text
+    metadata: Dict[str, Any] = field(...)  # Transcriber-reported metadata
+    
+    def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for the run manifest
+        "Serialize to a plain dict."
+```
+
+``` python
+@dataclass
+class SourceResult:
+    "Pipeline result for one source audio file."
+    
+    source_path: str  # Original input audio path
+    duration: float  # Source duration in seconds
+    vad_chunk_count: int  # Number of speech chunks VAD detected
+    batch_key: str  # ffmpeg `segment_audio` batch key linking the cut files
+    segments: List[SegmentRecord] = field(...)  # Ordered transcribed segments
+    
+    def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for the run manifest
+            """Serialize to a plain dict with nested segments."""
+            return {
+                "source_path": self.source_path,
+        "Serialize to a plain dict with nested segments."
+```
+
+``` python
+@dataclass
+class RunManifest:
+    "Durable record of one pipeline run (proto-bundle; see CR-20)."
+    
+    run_id: str  # Unique run identifier
+    created_at: float  # Unix timestamp at run start
+    config: Dict[str, Any]  # PipelineConfig snapshot
+    plugins: Dict[str, Dict[str, Any]] = field(...)  # instance_id -> {name, version, db_path}
+    sources: List[SourceResult] = field(...)  # Per-source results, input order
+    FORMAT: str = field(...)  # Manifest format tag
+    VERSION: str = field(...)  # Manifest schema version
+    
+    def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for JSON serialization
+            """Serialize to a plain dict with nested sources."""
+            return {
+                "format": self.FORMAT,
+        "Serialize to a plain dict with nested sources."
+    
+    def save(
+            self,
+            path: Union[str, Path],  # Destination JSON file (parent dirs created)
+        ) -> Path:  # The written path
+        "Write the manifest as pretty-printed JSON."
+```
+
+### pipeline (`pipeline.ipynb`)
+
+> The headless transcription pipeline: VAD analysis → boundary
+> computation → segment cutting → per-segment model-input conversion →
+> transcription, composed over capability workers via the substrate’s
+> `JobQueue`.
+
+#### Import
+
+``` python
+from cjm_transcription_core.pipeline import (
+    logger,
+    field_of,
+    submit_and_wait,
+    normalize_vad_result,
+    analyze_vad,
+    probe_duration,
+    cut_segments,
+    convert_for_model,
+    transcribe_segment,
+    tier1_segment_checks,
+    tier1_transcript_checks,
+    confirm_seam,
+    run_source,
+    collect_plugin_info,
+    run_pipeline
+)
+```
+
+#### Functions
+
+``` python
+def field_of(
+    result: Any,          # Capability result — dict over the proxy wire, object in-process
+    key: str,             # Field name to read
+    default: Any = None,  # Fallback when absent
+) -> Any:  # The field value or the default
+    """
+    Read a field from a dict-or-object capability result.
+    
+    Results cross the worker HTTP boundary as JSON dicts but are dataclass
+    instances in-process; every consumer in the ecosystem currently
+    re-implements this tolerance at each call site (pass-2 evidence: wire-shape
+    normalization belongs in a typed layer, not at every consumer).
+    """
+```
+
+``` python
+async def submit_and_wait(
+    "Submit one capability job, wait for it, and return its result (raise on failure)."
+```
+
+``` python
+def normalize_vad_result(
+    result: Any,  # MediaAnalysisResult (or proxy dict) from the VAD capability
+) -> Tuple[List[Dict[str, float]], float]:  # (sorted speech chunks [{start, end}], reported duration)
+    """
+    Normalize a VAD result into sorted speech chunks + the reported duration.
+    
+    Duration comes from the result metadata; returns 0.0 when the capability
+    did not report one (callers fall back to an ffmpeg probe).
+    """
+```
+
+``` python
+async def analyze_vad(
+    "Run VAD analysis on one audio file."
+```
+
+``` python
+async def probe_duration(
+    queue: JobQueue,
+    ffmpeg_id: str,   # ffmpeg capability instance id
+    audio_path: str,  # Audio file to probe
+) -> float:  # Duration in seconds (0.0 when the probe fails to report one)
+    "Probe a media file's duration via the ffmpeg capability's `get_info` action."
+```
+
+``` python
+async def cut_segments(
+    queue: JobQueue,
+    ffmpeg_id: str,                      # ffmpeg capability instance id
+    audio_path: str,                     # Source audio to cut
+    boundaries: List[Dict[str, float]],  # [{start, end}, ...] from compute_segment_boundaries
+) -> Tuple[List[Dict[str, Any]], str]:  # (per-segment dicts from ffmpeg, batch_key)
+    "Cut the source audio at the computed boundaries via ffmpeg `segment_audio`."
+```
+
+``` python
+async def convert_for_model(
+    queue: JobQueue,
+    ffmpeg_id: str,            # ffmpeg capability instance id
+    input_path: str,           # Segment audio file to normalize
+    sample_rate: int = 16000,  # Target sample rate
+    channels: int = 1,         # Target channel count
+) -> str:  # Path to the model-ready WAV
+    """
+    Convert one segment to a model-ready WAV via ffmpeg `convert`.
+    
+    Audio prep is an upstream ffmpeg concern (Track 12); transcription
+    capabilities receive model-ready files. Threaded manually (run → read
+    `output_path` → submit next) because `submit_sequence` cannot pipe step
+    outputs to step inputs (CR-16).
+    """
+```
+
+``` python
+async def transcribe_segment(
+    """
+    Transcribe one model-ready segment, passing per-call provenance kwargs.
+    
+    `job_id` / `source_*_time` ride the CR-15 identity/provenance kwarg channel;
+    `force` is a per-call control flag (CR-15 category 4).
+    """
+```
+
+``` python
+def tier1_segment_checks(
+    boundaries: List[Dict[str, float]],  # Computed segment boundaries
+    max_segment_duration: float,         # The configured wall-clock cap
+    chunk_count: int,                    # VAD speech-chunk count
+) -> List[str]:  # Human-readable warnings (empty = all clear)
+    "Tier-1 deterministic pre-filters for the boundary-review seam (no AI)."
+```
+
+``` python
+def tier1_transcript_checks(
+    segments: List[SegmentRecord],  # Transcribed segments for one source
+) -> List[str]:  # Human-readable warnings (empty = all clear)
+    "Tier-1 deterministic pre-filters for the transcript-review seam (no AI)."
+```
+
+``` python
+def confirm_seam(
+    seam: str,                 # Seam label, e.g. "boundary-review"
+    summary_lines: List[str],  # What the operator is being asked to accept
+    warnings: List[str],       # Tier-1 warnings (logged prominently)
+    assume_yes: bool = False,  # Headless mode: accept without prompting
+) -> bool:  # True = proceed, False = operator aborted
+    """
+    HITL approval seam in its cheapest viable form (log + optional CLI prompt).
+    
+    Per-seam capability annotation (HITL-assist methodology, 5 fields):
+      1. signal: per-source summaries + Tier-1 warnings
+      2. deterministic pre-filter: the tier1_* check functions (no AI)
+      3. modality-bridge candidate: spectrogram render for boundary sanity (future Tier 2)
+      4. authoritative verifier: re-transcribe-and-compare via a second capability (future Tier 3)
+      5. flywheel capture: accept/abort decisions are logged; durable capture is
+         a pass-2 seam-contract concern, not solved here
+    
+    NOTE: input() blocks the event loop — acceptable because seams sit between
+    stages with no jobs in flight; the pass-2 seam contract needs an async shape.
+    """
+```
+
+``` python
+async def run_source(
+    queue: JobQueue,
+    cfg: PipelineConfig,  # Run configuration
+    source_path: str,     # Source audio file
+    run_id: str,          # Run id (prefixes per-segment job ids)
+    source_index: int,    # Position of this source within the run
+) -> Optional[SourceResult]:  # None when the operator aborts at a seam
+    "Run the full pipeline for one source: VAD → boundaries → cut → convert → transcribe."
+```
+
+``` python
+def collect_plugin_info(
+    manager: PluginManager,   # Manager holding the loaded capabilities
+    instance_ids: List[str],  # Instance ids to record
+) -> Dict[str, Dict[str, Any]]:  # instance_id -> {name, version, db_path}
+    "Record capability identity + data-DB pointers for the run manifest (provenance)."
+```
+
+``` python
+async def run_pipeline(
+    manager: PluginManager,  # Manager with the three capabilities loaded
+    queue: JobQueue,         # Started job queue
+    cfg: PipelineConfig,     # Run configuration
+    sources: List[str],      # Source audio paths, in order
+    run_id: Optional[str] = None,  # Override run id (default: generated)
+) -> RunManifest:  # Manifest of everything the run produced
+    """
+    Run the transcription pipeline over the given sources, in order.
+    
+    An operator abort at any seam stops the run; the manifest holds the sources
+    completed so far (capability-side caches make re-runs cheap).
+    """
+```

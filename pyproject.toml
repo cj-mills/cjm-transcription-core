@@ -21,6 +21,9 @@ dependencies = ["cjm_plugin_system>=0.0.39"]
 Repository = "https://github.com/cj-mills/cjm-transcription-core"
 Documentation = "https://cj-mills.github.io/cjm-transcription-core/"
 
+[project.scripts]
+cjm-transcription-core = "cjm_transcription_core.cli:main"
+
 [project.entry-points.nbdev]
 cjm_transcription_core = "cjm_transcription_core._modidx:d"
 
@@ -28,6 +31,6 @@ cjm_transcription_core = "cjm_transcription_core._modidx:d"
 version = {attr = "cjm_transcription_core.__version__"}
 
 [tool.setuptools.packages.find]
-include = ["cjm_transcription_core"]
+include = ["cjm_transcription_core*"]
 
 [tool.nbdev]

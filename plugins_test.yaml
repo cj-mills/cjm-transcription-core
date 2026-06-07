@@ -1,0 +1,76 @@
+plugins:
+  # ----------------------------------------------------------------
+  # Media Processing: FFmpeg
+  # Convert (model-input prep) + segment_audio (boundary cuts).
+  # Local source paths for fast iteration (everything in-tree).
+  # ----------------------------------------------------------------
+  - name: ffmpeg
+    env_name: test-ffmpeg
+
+    # Environment File
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-plugin-ffmpeg/environment.yml"
+
+    # The Plugin Package (local source)
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-plugin-ffmpeg/"
+
+    # Interface Libraries
+    interface_libs:
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-plugin-system/"
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-plugin-system/"
+
+  # ----------------------------------------------------------------
+  # Media Analysis: Silero VAD
+  # CPU-based speech detection (bundled wheel weights)
+  # ----------------------------------------------------------------
+  - name: silero-vad
+    env_name: test-silero-vad
+
+    # Environment File
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-plugin-silero-vad/environment.yml"
+
+    # The Plugin Package (local source)
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-plugin-silero-vad/"
+
+    # Interface Libraries
+    interface_libs:
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-plugin-system/"
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-plugin-system/"
+
+  # ----------------------------------------------------------------
+  # AI Worker: Whisper
+  # Default transcriber for the minimal pipeline (lightest local model;
+  # quick-iteration tier)
+  # ----------------------------------------------------------------
+  - name: whisper-local
+    env_name: test-whisper
+
+    # Environment File (System Deps)
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-transcription-plugin-whisper/environment.yml"
+
+    # The Plugin Package (local source)
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-transcription-plugin-whisper/"
+
+    # Interface Libraries
+    interface_libs:
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-plugin-system/"
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-transcription-plugin-system/"
+
+  # ----------------------------------------------------------------
+  # AI Worker: Voxtral HF (Voxtral-Mini-3B-2507)
+  # Higher-quality transcriber — select via
+  #   cjm-transcription-core run --transcriber cjm-transcription-plugin-voxtral-hf
+  # Preferred for the design-guiding corpus tier (Supernova I/II).
+  # ----------------------------------------------------------------
+  - name: voxtral-hf
+    env_name: test-voxtral-hf
+
+    # Environment File (System Deps)
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-transcription-plugin-voxtral-hf/environment.yml"
+
+    # The Plugin Package (local source)
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-transcription-plugin-voxtral-hf/"
+
+    # Interface Libraries
+    interface_libs:
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-plugin-system/"
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-transcription-plugin-system/"
