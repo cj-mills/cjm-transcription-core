@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cjm-transcription-core"
+dynamic = ["version"]
+description = "A frontend-agnostic core for the audio transcription workflow — composes isolated capability workers (audio conversion, VAD segmentation, batch transcription, persistence) into a headless pipeline, with a CLI as its first driver."
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "Apache-2.0"}
+authors = [{name = "Christian J. Mills", email = "9126128+cj-mills@users.noreply.github.com"}]
+keywords = ['nbdev']
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = ["cjm_plugin_system>=0.0.39"]
+
+[project.urls]
+Repository = "https://github.com/cj-mills/cjm-transcription-core"
+Documentation = "https://cj-mills.github.io/cjm-transcription-core/"
+
+[project.entry-points.nbdev]
+cjm_transcription_core = "cjm_transcription_core._modidx:d"
+
+[tool.setuptools.dynamic]
+version = {attr = "cjm_transcription_core.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["cjm_transcription_core"]
+
+[tool.nbdev]
