@@ -28,8 +28,8 @@ graph LR
     models["models<br/>models"]
     pipeline["pipeline<br/>pipeline"]
 
-    cli --> models
     cli --> pipeline
+    cli --> models
     pipeline --> models
     pipeline --> boundaries
 ```
@@ -38,7 +38,21 @@ graph LR
 
 ## CLI Reference
 
-No CLI commands found in this project.
+### `cjm-transcription-core` Command
+
+    usage: cjm-transcription-core [-h] {run} ...
+
+    Headless transcription pipeline: VAD -> segment -> convert -> transcribe.
+
+    positional arguments:
+      {run}
+        run       Run the pipeline over one or more audio files
+
+    options:
+      -h, --help  show this help message and exit
+
+For detailed help on any command, use
+`cjm-transcription-core <command> --help`.
 
 ## Module Overview
 
