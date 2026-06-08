@@ -1,5 +1,25 @@
 plugins:
   # ----------------------------------------------------------------
+  # Infrastructure Worker: NVIDIA Monitor
+  # GPU subtree attribution for empirical resource tracking (CR-7).
+  # Load FIRST (before GPU transcribers) so their samples record
+  # gpu_memory_mb_peak — scale evidence from the Supernova runs.
+  # ----------------------------------------------------------------
+  - name: sys-mon-nvidia
+    env_name: test-sys-mon
+
+    # Environment File
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-system-monitor-nvidia/environment.yml"
+
+    # The Plugin Package (local source)
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-system-monitor-nvidia/"
+
+    # Interface Libraries
+    interface_libs:
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-plugin-system/"
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-infra-plugin-system/"
+
+  # ----------------------------------------------------------------
   # Media Processing: FFmpeg
   # Convert (model-input prep) + segment_audio (boundary cuts).
   # Local source paths for fast iteration (everything in-tree).
