@@ -37,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     run.add_argument("--transcriber", default="cjm-transcription-plugin-whisper", help="Transcription capability name")
     run.add_argument("--vad-plugin", default="cjm-media-plugin-silero-vad", help="VAD capability name")
     run.add_argument("--ffmpeg-plugin", default="cjm-media-plugin-ffmpeg", help="Convert/segment capability name")
+    run.add_argument("--sysmon-plugin", default=None, help="MonitorPlugin capability for GPU subtree attribution (CR-7); loaded first; default: no monitor")
     run.add_argument("--max-segment-duration", type=float, default=300.0, help="Wall-clock cap per segment in seconds")
     run.add_argument("--sample-rate", type=int, default=16000, help="Model-input sample rate")
     run.add_argument("--channels", type=int, default=1, help="Model-input channel count")
@@ -85,17 +86,25 @@ async def run_command(
     if missing:
         raise SystemExit(f"missing audio file(s): {missing}")
 
-    manager = PluginManager(search_paths=[Path(args.manifests_dir)])
+    # CR-7 GPU subtree attribution is opt-in: --sysmon-plugin threads the monitor
+    # name into BOTH the manager (load-time empirical records) and the queue
+    # (per-job resource samples); the monitor loads FIRST so GPU capabilities'
+    # samples record gpu_memory_mb_peak (voxtral-vllm e2e pattern).
+    manager = PluginManager(
+        search_paths=[Path(args.manifests_dir)],
+        sysmon_plugin_name=args.sysmon_plugin,
+    )
     instance_ids = [cfg.ffmpeg_plugin, cfg.vad_plugin, cfg.transcriber_plugin]
-    load_capabilities(manager, instance_ids)
+    load_order = ([args.sysmon_plugin] if args.sysmon_plugin else []) + instance_ids
+    load_capabilities(manager, load_order)
 
-    queue = JobQueue(deps=manager)
+    queue = JobQueue(deps=manager, sysmon_plugin_name=args.sysmon_plugin)
     await queue.start()
     try:
         manifest = await run_pipeline(manager, queue, cfg, sources)
     finally:
         await queue.stop()
-        for iid in instance_ids:
+        for iid in reversed(load_order):  # Reverse load order; the monitor unloads last
             try:
                 manager.unload_plugin(iid)
             except Exception as e:  # Best-effort teardown; never mask the run's outcome
