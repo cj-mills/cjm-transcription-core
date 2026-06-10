@@ -6,8 +6,8 @@ Docs: https://cj-mills.github.io/cjm-transcription-corepipeline.html.md"""
 
 # %% auto #0
 __all__ = ['logger', 'submit_and_wait', 'normalize_vad_result', 'analyze_vad', 'probe_duration', 'cut_segments',
-           'convert_for_model', 'transcribe_segment', 'tier1_segment_checks', 'tier1_transcript_checks', 'confirm_seam',
-           'run_source', 'collect_plugin_info', 'run_pipeline']
+           'build_segment_composition', 'records_from_composition', 'tier1_segment_checks', 'tier1_transcript_checks',
+           'confirm_seam', 'run_source', 'collect_plugin_info', 'run_pipeline']
 
 # %% ../nbs/pipeline.ipynb #c7cb2030
 import logging
@@ -17,6 +17,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_plugin_system.core.manager import PluginManager
 from cjm_plugin_system.core.queue import JobQueue, JobStatus
+from cjm_plugin_system.core.ports import (
+    Composition, CompositionNode, CompositionRun, NodeState, OutputRef,
+)
 
 # Typed wire-kind registration (stage 2): importing the DTO classes is what
 # lets the proxy's wire_decode hand this host process TYPED results.
@@ -109,59 +112,87 @@ async def cut_segments(
     return segments, batch_key
 
 # %% ../nbs/pipeline.ipynb #398ea4ef
-async def convert_for_model(
-    queue: JobQueue,
-    ffmpeg_id: str,            # ffmpeg capability instance id
-    input_path: str,           # Segment audio file to normalize
-    sample_rate: int = 16000,  # Target sample rate
-    channels: int = 1,         # Target channel count
-) -> str:  # Path to the model-ready WAV
-    """Convert one segment to a model-ready WAV via ffmpeg `convert`.
+def build_segment_composition(
+    raw_segments: List[Dict[str, Any]],  # Per-segment dicts from ffmpeg segment_audio
+    run_id: str,           # Run id (prefixes per-segment provenance job ids)
+    source_index: int,     # Position of this source within the run
+    ffmpeg_id: str,        # ffmpeg capability instance id
+    transcriber_id: str,   # Transcription capability instance id
+    sample_rate: int = 16000,  # Model-input sample rate
+    channels: int = 1,         # Model-input channel count
+    force: bool = False,       # Per-call cache-bypass control flag
+) -> Tuple[Composition, List[Dict[str, Any]]]:  # (composition, per-segment meta rows)
+    """Build the per-source fan-out composition: N independent convert→transcribe pipes.
 
-    Audio prep is an upstream ffmpeg concern (Track 12); transcription
-    capabilities receive model-ready files. Threaded manually (run → read
-    `output_path` → submit next) because `submit_sequence` cannot pipe step
-    outputs to step inputs (CR-16).
+    Host-constructed fan-out (stage-3 ratified shape): the host reads the cut
+    list (it needs the per-segment fields for SegmentRecords anyway), computes
+    every per-item kwarg statically — `job_id` provenance, source times — and
+    the only execution-time unknown, ffmpeg's hashed `cache_dir_for_config`
+    output path, flows through the `OutputRef` binding. Replaces the manual
+    run→read-`output_path`→submit threading (evidence E1; the CR-16 gap).
+    Audio prep stays an upstream ffmpeg concern (Track 12); transcription
+    capabilities receive model-ready files.
     """
-    result = await submit_and_wait(
-        queue, ffmpeg_id,
-        action="convert", input_path=input_path,
-        output_format="wav", sample_rate=sample_rate, channels=channels,
-    )
-    wav_path = (result or {}).get("output_path")
-    if not wav_path or not Path(wav_path).exists():
-        raise RuntimeError(f"convert returned no valid output_path for {input_path}: {result!r}")
-    return str(wav_path)
+    nodes: List[CompositionNode] = []
+    metas: List[Dict[str, Any]] = []
+    for seg in raw_segments:
+        # ffmpeg per-segment entries are plugin-side dicts (untyped until the
+        # multi-op tool's stage-8 adapter split).
+        idx = int(seg.get("index", len(metas)))
+        seg_path = str(seg.get("output_path", ""))
+        start = float(seg.get("start", 0.0))
+        end = float(seg.get("end", 0.0))
+        job_id = f"{run_id}_src{source_index}_seg{idx:04d}"
+        conv = f"convert_{idx:04d}"
+        tr = f"transcribe_{idx:04d}"
+        nodes.append(CompositionNode(conv, ffmpeg_id, {
+            "action": "convert", "input_path": seg_path,
+            "output_format": "wav", "sample_rate": sample_rate, "channels": channels,
+        }))
+        nodes.append(CompositionNode(tr, transcriber_id, {
+            "audio": OutputRef(conv, "output_path"),
+            # job_id / source_*_time ride the CR-15 identity/provenance kwarg
+            # channel; force is the per-call control flag (CR-15 category 4).
+            "job_id": job_id,
+            "source_start_time": start,
+            "source_end_time": end,
+            "force": force,
+        }))
+        metas.append({"index": idx, "segment_path": seg_path, "start": start,
+                      "end": end, "job_id": job_id, "convert_node": conv,
+                      "transcribe_node": tr})
+    return Composition(nodes=nodes), metas
 
 # %% ../nbs/pipeline.ipynb #1cd87925
-async def transcribe_segment(
-    queue: JobQueue,
-    transcriber_id: str,  # Transcription capability instance id
-    audio_path: str,      # Model-ready audio file
-    *,
-    job_id: str,                # Per-call provenance id (keys the capability's DB row)
-    source_start_time: float,   # Segment start in source-audio seconds (provenance)
-    source_end_time: float,     # Segment end in source-audio seconds (provenance)
-    force: bool = False,        # Bypass the (audio_hash, config_hash) cache
-) -> Tuple[str, Dict[str, Any]]:  # (transcribed text, transcriber metadata)
-    """Transcribe one model-ready segment, passing per-call provenance kwargs.
+def records_from_composition(
+    crun: CompositionRun,          # Terminal composition run
+    metas: List[Dict[str, Any]],   # Meta rows from build_segment_composition
+) -> List[SegmentRecord]:  # Ordered per-segment records
+    """Fold a completed segment composition back into SegmentRecords.
 
-    `job_id` / `source_*_time` ride the CR-15 identity/provenance kwarg channel;
-    `force` is a per-call control flag (CR-15 category 4).
+    Raises on a non-completed run, surfacing the failed nodes' structured
+    errors — under fail_fast a single segment failure stops the source,
+    matching the pre-ports loop where the first raise aborted the source.
     """
-    result = await submit_and_wait(
-        queue, transcriber_id,
-        audio=audio_path,
-        job_id=job_id,
-        source_start_time=source_start_time,
-        source_end_time=source_end_time,
-        force=force,
-    )
-    # Stage 2 (typed wire layer): a typed TranscriptionResult arrives at the
-    # host; attribute access replaces the field_of tolerance (E5 retired).
-    text = str(result.text or "")
-    metadata = dict(result.metadata or {})
-    return text, metadata
+    if crun.status != NodeState.completed:
+        failed = {nid: str(nr.error) for nid, nr in crun.node_runs.items()
+                  if nr.state == NodeState.failed}
+        raise RuntimeError(f"segment composition {crun.status.value}: {failed}")
+    results = crun.results_by_node()
+    records: List[SegmentRecord] = []
+    for m in metas:
+        wav_path = str((results[m["convert_node"]] or {}).get("output_path") or "")
+        tr = results[m["transcribe_node"]]
+        # Typed TranscriptionResult (stage-2 wire layer): attribute access.
+        text = str(tr.text or "")
+        metadata = dict(tr.metadata or {})
+        records.append(SegmentRecord(
+            index=m["index"], start=m["start"], end=m["end"],
+            duration=m["end"] - m["start"],
+            segment_path=m["segment_path"], model_input_path=wav_path,
+            job_id=m["job_id"], text=text, metadata=metadata,
+        ))
+    return records
 
 # %% ../nbs/pipeline.ipynb #3b8ba187
 def tier1_segment_checks(
@@ -270,31 +301,20 @@ async def run_source(
     # 4. Cut the source at the boundaries
     raw_segments, batch_key = await cut_segments(queue, cfg.ffmpeg_plugin, source_path, boundaries)
 
-    # 5. Per segment: convert → transcribe (manual output→input threading; CR-16)
-    records: List[SegmentRecord] = []
-    for seg in raw_segments:
-        # ffmpeg per-segment entries are plugin-side dicts (untyped until
-        # the multi-op tool's stage-8 adapter split).
-        idx = int(seg.get("index", len(records)))
-        seg_path = str(seg.get("output_path", ""))
-        start = float(seg.get("start", 0.0))
-        end = float(seg.get("end", 0.0))
-        wav_path = await convert_for_model(
-            queue, cfg.ffmpeg_plugin, seg_path,
-            sample_rate=cfg.sample_rate, channels=cfg.channels,
-        )
-        job_id = f"{run_id}_src{source_index}_seg{idx:04d}"
-        text, meta = await transcribe_segment(
-            queue, cfg.transcriber_plugin, wav_path,
-            job_id=job_id, source_start_time=start, source_end_time=end,
-            force=cfg.force,
-        )
-        logger.info(f"[src {source_index}] seg {idx}: {len(text)} chars")
-        records.append(SegmentRecord(
-            index=idx, start=start, end=end, duration=end - start,
-            segment_path=seg_path, model_input_path=wav_path,
-            job_id=job_id, text=text, metadata=meta,
-        ))
+    # 5. Per segment: convert → transcribe as ONE composition of N independent
+    # pipes (CR-16 ports; replaces the manual output→input threading, E1).
+    # The converts parallelize under the queue's empirical admission; the
+    # hashed convert output path flows through the OutputRef binding.
+    comp, metas = build_segment_composition(
+        raw_segments, run_id, source_index,
+        cfg.ffmpeg_plugin, cfg.transcriber_plugin,
+        sample_rate=cfg.sample_rate, channels=cfg.channels, force=cfg.force,
+    )
+    comp_id = await queue.submit_composition(comp)
+    crun = await queue.wait_for_composition(comp_id)
+    records = records_from_composition(crun, metas)
+    for r in records:
+        logger.info(f"[src {source_index}] seg {r.index}: {len(r.text)} chars")
 
     # 6. HITL seam: transcript review
     total_chars = sum(len(r.text) for r in records)
