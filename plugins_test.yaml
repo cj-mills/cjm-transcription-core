@@ -94,3 +94,23 @@ plugins:
     interface_libs:
       - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-plugin-system/"
       - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-transcription-plugin-system/"
+
+  # ----------------------------------------------------------------
+  # Context Graph: SQLite Graph
+  # Stage 5 (CR-18 revolution 2): transcription EMITS the graph root
+  # (Source -> AudioSegment -> Transcript) through this capability's
+  # graph-storage adapter via the task channel.
+  # ----------------------------------------------------------------
+  - name: sqlite-graph
+    env_name: test-sqlite-graph
+
+    # Environment File
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-graph-plugin-sqlite/environment.yml"
+
+    # The Plugin Package (local source)
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-graph-plugin-sqlite/"
+
+    # Interface Libraries
+    interface_libs:
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-plugin-system/"
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-graph-plugin-system/"

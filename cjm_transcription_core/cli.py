@@ -12,7 +12,7 @@ import argparse
 import asyncio
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from cjm_plugin_system.core.manager import PluginManager
 from cjm_plugin_system.core.queue import JobQueue
@@ -27,16 +27,23 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     """Build the CLI parser (subcommands: run)."""
     parser = argparse.ArgumentParser(
         prog="cjm-transcription-core",
-        description="Headless transcription pipeline: VAD -> segment -> convert -> transcribe.",
+        description="Headless transcription pipeline: VAD -> segment -> convert -> transcribe [-> graph emission].",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run", help="Run the pipeline over one or more audio files")
     run.add_argument("audio", nargs="+", help="Source audio file path(s), in order")
     run.add_argument("--manifests-dir", default=".cjm/manifests", help="Capability manifests directory")
-    run.add_argument("--transcriber", default="cjm-transcription-plugin-whisper", help="Transcription capability name")
+    run.add_argument("--transcriber", action="append", default=None,
+                     help="Transcription capability name; REPEATABLE for the dual-transcriber "
+                          "(lightweight + accuracy) comparison run (default: cjm-transcription-plugin-whisper)")
     run.add_argument("--vad-plugin", default="cjm-media-plugin-silero-vad", help="VAD capability name")
     run.add_argument("--ffmpeg-plugin", default="cjm-media-plugin-ffmpeg", help="Convert/segment capability name")
+    run.add_argument("--graph-plugin", default=None,
+                     help="Graph-storage capability for Source/AudioSegment/Transcript emission "
+                          "(CR-18 revolution 2); default: no emission, manifest-only run")
+    run.add_argument("--graph-db-path", default=None,
+                     help="Explicit graph DB path override (caller-wins config, C8/F10; default: the capability's configured db_path)")
     run.add_argument("--sysmon-plugin", default=None, help="MonitorPlugin capability for GPU subtree attribution (CR-7); loaded first; default: no monitor")
     run.add_argument("--max-segment-duration", type=float, default=300.0, help="Wall-clock cap per segment in seconds")
     run.add_argument("--sample-rate", type=int, default=16000, help="Model-input sample rate")
@@ -51,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
 def load_capabilities(
     manager: PluginManager,   # Freshly constructed manager
     instance_ids: List[str],  # Capability names to load (default instances)
+    configs: Optional[Dict[str, Dict[str, Any]]] = None,  # Per-capability config overrides (caller-wins, C8)
 ) -> None:
     """Discover manifests + load each requested capability (default instance)."""
     manager.discover_manifests()
@@ -62,7 +70,7 @@ def load_capabilities(
                 f"capability {iid!r} not found in manifests "
                 f"(discovered: {sorted(discovered)}) — run cjm-ctl install-all first"
             )
-        if not manager.load_plugin(meta):
+        if not manager.load_plugin(meta, config=(configs or {}).get(iid)):
             raise SystemExit(f"failed to load capability {iid!r}")
         logger.info(f"loaded {iid}")
 
@@ -71,10 +79,13 @@ async def run_command(
     args: argparse.Namespace,  # Parsed CLI arguments for the `run` subcommand
 ) -> int:  # Process exit code (0 = all sources completed)
     """Execute the `run` subcommand: full pipeline over the given audio files."""
+    transcribers = list(args.transcriber or ["cjm-transcription-plugin-whisper"])
     cfg = PipelineConfig(
         vad_plugin=args.vad_plugin,
         ffmpeg_plugin=args.ffmpeg_plugin,
-        transcriber_plugin=args.transcriber,
+        transcriber_plugins=transcribers,
+        graph_plugin=args.graph_plugin,
+        graph_db_path=args.graph_db_path,
         max_segment_duration=args.max_segment_duration,
         sample_rate=args.sample_rate,
         channels=args.channels,
@@ -85,6 +96,8 @@ async def run_command(
     missing = [s for s in sources if not Path(s).exists()]
     if missing:
         raise SystemExit(f"missing audio file(s): {missing}")
+    if args.graph_db_path and not args.graph_plugin:
+        raise SystemExit("--graph-db-path requires --graph-plugin")
 
     # CR-7 GPU subtree attribution is opt-in: --sysmon-plugin threads the monitor
     # name into BOTH the manager (load-time empirical records) and the queue
@@ -94,9 +107,13 @@ async def run_command(
         search_paths=[Path(args.manifests_dir)],
         sysmon_plugin_name=args.sysmon_plugin,
     )
-    instance_ids = [cfg.ffmpeg_plugin, cfg.vad_plugin, cfg.transcriber_plugin]
+    instance_ids = ([cfg.ffmpeg_plugin, cfg.vad_plugin] + list(cfg.transcriber_plugins)
+                    + ([cfg.graph_plugin] if cfg.graph_plugin else []))
     load_order = ([args.sysmon_plugin] if args.sysmon_plugin else []) + instance_ids
-    load_capabilities(manager, load_order)
+    # --graph-db-path threads a caller-wins config into the graph load (C8/F10).
+    configs = ({cfg.graph_plugin: {"db_path": args.graph_db_path}}
+               if (cfg.graph_plugin and args.graph_db_path) else None)
+    load_capabilities(manager, load_order, configs=configs)
 
     queue = JobQueue(deps=manager, sysmon_plugin_name=args.sysmon_plugin)
     await queue.start()
@@ -114,7 +131,10 @@ async def run_command(
     manifest.save(out)
     done = sum(len(s.segments) for s in manifest.sources)
     print(f"run manifest: {out}")
-    print(f"sources completed: {len(manifest.sources)}/{len(sources)}  segments transcribed: {done}")
+    print(f"sources completed: {len(manifest.sources)}/{len(sources)}  segments: {done}  transcribers: {len(transcribers)}")
+    if cfg.graph_plugin:
+        for s in manifest.sources:
+            print(f"graph emission [{Path(s.source_path).name}]: {s.graph}")
     return 0 if len(manifest.sources) == len(sources) else 1
 
 # %% ../nbs/cli.ipynb #feae285d

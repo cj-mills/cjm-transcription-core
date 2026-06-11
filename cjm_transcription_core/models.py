@@ -21,7 +21,10 @@ class PipelineConfig:
     """Configuration for one transcription pipeline run."""
     vad_plugin: str = "cjm-media-plugin-silero-vad"               # VAD capability instance id
     ffmpeg_plugin: str = "cjm-media-plugin-ffmpeg"                # Convert/segment capability instance id
-    transcriber_plugin: str = "cjm-transcription-plugin-whisper"  # Transcription capability instance id
+    transcriber_plugins: List[str] = field(                       # Transcription capability instance ids (one or more; stage-5 dual-transcriber)
+        default_factory=lambda: ["cjm-transcription-plugin-whisper"])
+    graph_plugin: Optional[str] = None   # Graph-storage capability for Source/AudioSegment/Transcript emission (None = no emission)
+    graph_db_path: Optional[str] = None  # Explicit graph DB path override (caller-wins config, C8/F10)
     max_segment_duration: float = 300.0  # Wall-clock cap per segment in seconds (pre-emptive cuts)
     sample_rate: int = 16000             # Model-input sample rate for the per-segment convert step
     channels: int = 1                    # Model-input channel count
@@ -35,16 +38,21 @@ class PipelineConfig:
 # %% ../nbs/models.ipynb #7baa6c96
 @dataclass
 class SegmentRecord:
-    """One transcribed segment of a source audio file."""
+    """One segment of a source audio file, with per-transcriber transcripts.
+
+    Manifest schema 0.2.0: the single text/job_id pair became `transcripts`
+    keyed by transcriber capability name — transcription emits SYMMETRIC
+    variants; the authority designation is the decomp consumer's choice
+    (stage-5 ratified design). `model_input_hash` content-addresses the
+    model-input WAV (the audio of record, E14) for graph emission identity."""
     index: int              # 0-based position within the source
     start: float            # Segment start in source-audio seconds
     end: float              # Segment end in source-audio seconds
     duration: float         # Wall-clock segment duration in seconds
     segment_path: str       # Cut audio file (source codec) from ffmpeg `segment_audio`
     model_input_path: str   # Model-ready WAV from the per-segment `convert` step
-    job_id: str             # Provenance job id passed to the transcriber (keys its DB row)
-    text: str               # Transcribed text
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Transcriber-reported metadata
+    model_input_hash: str = ""  # Content hash over the model-input WAV ("algo:hexdigest")
+    transcripts: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # transcriber -> {job_id, text, metadata}
 
     def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for the run manifest
         """Serialize to a plain dict."""
@@ -58,7 +66,9 @@ class SourceResult:
     duration: float         # Source duration in seconds
     vad_chunk_count: int    # Number of speech chunks VAD detected
     batch_key: str          # ffmpeg `segment_audio` batch key linking the cut files
+    content_hash: str = ""  # Content hash over the source file (Source node identity input)
     segments: List[SegmentRecord] = field(default_factory=list)  # Ordered transcribed segments
+    graph: Optional[Dict[str, Any]] = None  # Emission record: {source_node_id, nodes_added, nodes_verified, edges_added} (None = not emitted)
 
     def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for the run manifest
         """Serialize to a plain dict with nested segments."""
@@ -67,21 +77,29 @@ class SourceResult:
             "duration": self.duration,
             "vad_chunk_count": self.vad_chunk_count,
             "batch_key": self.batch_key,
+            "content_hash": self.content_hash,
             "segments": [s.to_dict() for s in self.segments],
+            "graph": self.graph,
         }
 
 # %% ../nbs/models.ipynb #10fbe0e4
 @dataclass
 class RunManifest:
-    """Durable record of one pipeline run (proto-bundle; see CR-20)."""
+    """Durable record of one pipeline run (proto-bundle; see CR-20).
+
+    Schema 0.2.0 (stage 5): per-segment `transcripts` keyed by transcriber +
+    source `content_hash` + per-segment `model_input_hash` + plugin
+    `config_hash` — everything a downstream extender needs to RECOMPUTE the
+    deterministic graph node ids (no search, no stored-id coupling)."""
     run_id: str                       # Unique run identifier
     created_at: float                 # Unix timestamp at run start
     config: Dict[str, Any]            # PipelineConfig snapshot
-    plugins: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # instance_id -> {name, version, db_path}
+    plugins: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # instance_id -> {name, version, db_path, config_hash}
     sources: List[SourceResult] = field(default_factory=list)         # Per-source results, input order
+    graph: Optional[Dict[str, Any]] = None  # Emission target: {plugin, db_path} (None = no emission this run)
 
     FORMAT: str = field(default="cjm-transcription-core/run-manifest", repr=False)  # Manifest format tag
-    VERSION: str = field(default="0.1.0", repr=False)                               # Manifest schema version
+    VERSION: str = field(default="0.2.0", repr=False)                               # Manifest schema version
 
     def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for JSON serialization
         """Serialize to a plain dict with nested sources."""
@@ -93,6 +111,7 @@ class RunManifest:
             "config": self.config,
             "plugins": self.plugins,
             "sources": [s.to_dict() for s in self.sources],
+            "graph": self.graph,
         }
 
     def save(

@@ -20,6 +20,8 @@ from cjm_plugin_system.core.queue import JobQueue, JobStatus
 from cjm_plugin_system.core.ports import (
     Composition, CompositionNode, CompositionRun, NodeState, OutputRef,
 )
+from cjm_plugin_system.core.empirical_store import compute_config_hash
+from cjm_plugin_system.utils.hashing import hash_file
 
 # Typed wire-kind registration (stage 2): importing the DTO classes is what
 # lets the proxy's wire_decode hand this host process TYPED results.
@@ -34,6 +36,7 @@ from cjm_transcription_core.models import (
     new_run_id,
 )
 from .boundaries import compute_segment_boundaries
+from .emission import emit_source_graph
 
 logger = logging.getLogger(__name__)
 
@@ -117,21 +120,20 @@ def build_segment_composition(
     run_id: str,           # Run id (prefixes per-segment provenance job ids)
     source_index: int,     # Position of this source within the run
     ffmpeg_id: str,        # ffmpeg capability instance id
-    transcriber_id: str,   # Transcription capability instance id
+    transcriber_ids: List[str],  # Transcription capability instance ids (one or more)
     sample_rate: int = 16000,  # Model-input sample rate
     channels: int = 1,         # Model-input channel count
     force: bool = False,       # Per-call cache-bypass control flag
 ) -> Tuple[Composition, List[Dict[str, Any]]]:  # (composition, per-segment meta rows)
-    """Build the per-source fan-out composition: N independent convert→transcribe pipes.
+    """Build the per-source fan-out composition: N independent convert→(T× transcribe) pipes.
 
-    Host-constructed fan-out (stage-3 ratified shape): the host reads the cut
-    list (it needs the per-segment fields for SegmentRecords anyway), computes
-    every per-item kwarg statically — `job_id` provenance, source times — and
-    the only execution-time unknown, ffmpeg's hashed `cache_dir_for_config`
-    output path, flows through the `OutputRef` binding. Replaces the manual
-    run→read-`output_path`→submit threading (evidence E1; the CR-16 gap).
-    Audio prep stays an upstream ffmpeg concern (Track 12); transcription
-    capabilities receive model-ready files.
+    Host-constructed fan-out (stage-3 ratified shape): the host computes every
+    per-item kwarg statically; the only execution-time unknown, ffmpeg's hashed
+    `cache_dir_for_config` output path, flows through the `OutputRef` binding.
+    Stage 5 (dual-transcriber = the named parallel-port adopter): each segment's
+    convert output fans out to ONE transcribe node PER TRANSCRIBER — the
+    lightweight ∥ accuracy comparison runs as one composition; the transcribe
+    nodes are independent and parallelize under the queue's empirical admission.
     """
     nodes: List[CompositionNode] = []
     metas: List[Dict[str, Any]] = []
@@ -142,25 +144,30 @@ def build_segment_composition(
         seg_path = str(seg.get("output_path", ""))
         start = float(seg.get("start", 0.0))
         end = float(seg.get("end", 0.0))
-        job_id = f"{run_id}_src{source_index}_seg{idx:04d}"
         conv = f"convert_{idx:04d}"
-        tr = f"transcribe_{idx:04d}"
         nodes.append(CompositionNode(conv, ffmpeg_id, {
             "action": "convert", "input_path": seg_path,
             "output_format": "wav", "sample_rate": sample_rate, "channels": channels,
         }))
-        nodes.append(CompositionNode(tr, transcriber_id, {
-            "audio": OutputRef(conv, "output_path"),
-            # job_id / source_*_time ride the CR-15 identity/provenance kwarg
-            # channel; force is the per-call control flag (CR-15 category 4).
-            "job_id": job_id,
-            "source_start_time": start,
-            "source_end_time": end,
-            "force": force,
-        }))
+        transcribe_nodes: Dict[str, str] = {}
+        job_ids: Dict[str, str] = {}
+        for ti, transcriber_id in enumerate(transcriber_ids):
+            tr = f"transcribe_t{ti}_{idx:04d}"
+            job_id = f"{run_id}_src{source_index}_seg{idx:04d}_t{ti}"
+            nodes.append(CompositionNode(tr, transcriber_id, {
+                "audio": OutputRef(conv, "output_path"),
+                # job_id / source_*_time ride the CR-15 identity/provenance kwarg
+                # channel; force is the per-call control flag (CR-15 category 4).
+                "job_id": job_id,
+                "source_start_time": start,
+                "source_end_time": end,
+                "force": force,
+            }))
+            transcribe_nodes[transcriber_id] = tr
+            job_ids[transcriber_id] = job_id
         metas.append({"index": idx, "segment_path": seg_path, "start": start,
-                      "end": end, "job_id": job_id, "convert_node": conv,
-                      "transcribe_node": tr})
+                      "end": end, "job_ids": job_ids, "convert_node": conv,
+                      "transcribe_nodes": transcribe_nodes})
     return Composition(nodes=nodes), metas
 
 # %% ../nbs/pipeline.ipynb #1cd87925
@@ -173,6 +180,8 @@ def records_from_composition(
     Raises on a non-completed run, surfacing the failed nodes' structured
     errors — under fail_fast a single segment failure stops the source,
     matching the pre-ports loop where the first raise aborted the source.
+    Stage 5: each record carries per-transcriber `transcripts` (symmetric
+    variants; authority is the decomp consumer's choice).
     """
     if crun.status != NodeState.completed:
         failed = {nid: str(nr.error) for nid, nr in crun.node_runs.items()
@@ -182,15 +191,20 @@ def records_from_composition(
     records: List[SegmentRecord] = []
     for m in metas:
         wav_path = str((results[m["convert_node"]] or {}).get("output_path") or "")
-        tr = results[m["transcribe_node"]]
-        # Typed TranscriptionResult (stage-2 wire layer): attribute access.
-        text = str(tr.text or "")
-        metadata = dict(tr.metadata or {})
+        transcripts: Dict[str, Dict[str, Any]] = {}
+        for transcriber_id, node_id in m["transcribe_nodes"].items():
+            tr = results[node_id]
+            # Typed TranscriptionResult (stage-2 wire layer): attribute access.
+            transcripts[transcriber_id] = {
+                "job_id": m["job_ids"][transcriber_id],
+                "text": str(tr.text or ""),
+                "metadata": dict(tr.metadata or {}),
+            }
         records.append(SegmentRecord(
             index=m["index"], start=m["start"], end=m["end"],
             duration=m["end"] - m["start"],
             segment_path=m["segment_path"], model_input_path=wav_path,
-            job_id=m["job_id"], text=text, metadata=metadata,
+            transcripts=transcripts,
         ))
     return records
 
@@ -224,12 +238,16 @@ def tier1_transcript_checks(
     """Tier-1 deterministic pre-filters for the transcript-review seam (no AI)."""
     warnings: List[str] = []
     for s in segments:
-        if not s.text.strip():
-            warnings.append(f"segment {s.index} produced EMPTY text ({s.duration:.1f}s of audio)")
-        elif s.duration > 30 and len(s.text) < 20:
-            warnings.append(
-                f"segment {s.index}: suspiciously short text ({len(s.text)} chars for {s.duration:.1f}s)"
-            )
+        for tname, tr in s.transcripts.items():
+            text = str(tr.get("text") or "")
+            if not text.strip():
+                warnings.append(
+                    f"segment {s.index} [{tname}] produced EMPTY text ({s.duration:.1f}s of audio)"
+                )
+            elif s.duration > 30 and len(text) < 20:
+                warnings.append(
+                    f"segment {s.index} [{tname}]: suspiciously short text ({len(text)} chars for {s.duration:.1f}s)"
+                )
     return warnings
 
 # %% ../nbs/pipeline.ipynb #0ea0c132
@@ -276,6 +294,9 @@ async def run_source(
     t0 = time.time()
     logger.info(f"[src {source_index}] {source_path}")
 
+    # 0. Content-address the source (the Source node identity input; stage 5).
+    content_hash = hash_file(source_path)
+
     # 1. VAD analysis (duration falls back to an ffmpeg probe when unreported)
     chunks, duration = await analyze_vad(queue, cfg.vad_plugin, source_path, force=cfg.force)
     if duration <= 0:
@@ -301,26 +322,32 @@ async def run_source(
     # 4. Cut the source at the boundaries
     raw_segments, batch_key = await cut_segments(queue, cfg.ffmpeg_plugin, source_path, boundaries)
 
-    # 5. Per segment: convert → transcribe as ONE composition of N independent
-    # pipes (CR-16 ports; replaces the manual output→input threading, E1).
-    # The converts parallelize under the queue's empirical admission; the
-    # hashed convert output path flows through the OutputRef binding.
+    # 5. Per segment: convert → (T× transcribe) as ONE composition of N
+    # independent pipes (CR-16 ports; stage-5 dual-transcriber fan-out).
     comp, metas = build_segment_composition(
         raw_segments, run_id, source_index,
-        cfg.ffmpeg_plugin, cfg.transcriber_plugin,
+        cfg.ffmpeg_plugin, cfg.transcriber_plugins,
         sample_rate=cfg.sample_rate, channels=cfg.channels, force=cfg.force,
     )
     comp_id = await queue.submit_composition(comp)
     crun = await queue.wait_for_composition(comp_id)
     records = records_from_composition(crun, metas)
+
+    # 5b. Content-address the model-input WAVs (AudioSegment provenance; the
+    # audio of record, E14 — graph emission + downstream slice refs hang off it).
     for r in records:
-        logger.info(f"[src {source_index}] seg {r.index}: {len(r.text)} chars")
+        if r.model_input_path:
+            r.model_input_hash = hash_file(r.model_input_path)
+        for tname, tr in r.transcripts.items():
+            logger.info(f"[src {source_index}] seg {r.index} [{tname}]: {len(tr.get('text') or '')} chars")
 
     # 6. HITL seam: transcript review
-    total_chars = sum(len(r.text) for r in records)
+    total_chars = {t: sum(len(r.transcripts.get(t, {}).get("text") or "") for r in records)
+                   for t in cfg.transcriber_plugins}
+    chars_summary = "  ".join(f"{t}: {n} chars" for t, n in total_chars.items())
     if not confirm_seam(
         "transcript-review",
-        [f"{Path(source_path).name}: {len(records)} segment(s), {total_chars} chars total"],
+        [f"{Path(source_path).name}: {len(records)} segment(s)  {chars_summary}"],
         tier1_transcript_checks(records),
         assume_yes=cfg.assume_yes,
     ):
@@ -329,31 +356,47 @@ async def run_source(
     logger.info(f"[src {source_index}] done in {time.time() - t0:.1f}s")
     return SourceResult(
         source_path=source_path, duration=duration,
-        vad_chunk_count=len(chunks), batch_key=batch_key, segments=records,
+        vad_chunk_count=len(chunks), batch_key=batch_key,
+        content_hash=content_hash, segments=records,
     )
 
 # %% ../nbs/pipeline.ipynb #f088d591
 def collect_plugin_info(
     manager: PluginManager,   # Manager holding the loaded capabilities
     instance_ids: List[str],  # Instance ids to record
-) -> Dict[str, Dict[str, Any]]:  # instance_id -> {name, version, db_path}
-    """Record capability identity + data-DB pointers for the run manifest (provenance)."""
+) -> Dict[str, Dict[str, Any]]:  # instance_id -> {name, version, db_path, config_hash}
+    """Record capability identity + data-DB pointers for the run manifest (provenance).
+
+    Stage 5: also records each capability's EFFECTIVE config hash (the same
+    `compute_config_hash` the empirical store keys on) — Transcript node
+    identity is (audio segment, transcriber, config_hash), so the manifest must
+    carry the hash for downstream id recomputation. `db_path` prefers the
+    effective config over the manifest default (the D19 lesson).
+    """
     info: Dict[str, Dict[str, Any]] = {}
     for iid in instance_ids:
         meta = (getattr(manager, "plugins", {}) or {}).get(iid)
         if meta is None:
             continue
         manifest = getattr(meta, "manifest", {}) or {}
+        current_config: Dict[str, Any] = {}
+        try:
+            proxy = manager.get_plugin(iid)
+            if proxy is not None:
+                current_config = proxy.get_current_config() or {}
+        except Exception as e:  # Best-effort: identity recording must not fail the run
+            logger.warning(f"collect_plugin_info: get_current_config({iid}) failed: {e}")
         info[iid] = {
             "name": meta.name,
             "version": getattr(meta, "version", None),
-            "db_path": manifest.get("db_path"),
+            "db_path": current_config.get("db_path") or manifest.get("db_path"),
+            "config_hash": compute_config_hash(current_config),
         }
     return info
 
 # %% ../nbs/pipeline.ipynb #e836371d
 async def run_pipeline(
-    manager: PluginManager,  # Manager with the three capabilities loaded
+    manager: PluginManager,  # Manager with the capabilities loaded
     queue: JobQueue,         # Started job queue
     cfg: PipelineConfig,     # Run configuration
     sources: List[str],      # Source audio paths, in order
@@ -362,17 +405,29 @@ async def run_pipeline(
     """Run the transcription pipeline over the given sources, in order.
 
     An operator abort at any seam stops the run; the manifest holds the sources
-    completed so far (capability-side caches make re-runs cheap).
+    completed so far (capability-side caches make re-runs cheap). With
+    `cfg.graph_plugin` set, each completed source EMITS the graph root
+    (Source → AudioSegment → Transcript; CR-18 revolution 2) idempotently —
+    re-runs verify-collide instead of duplicating.
     """
     run_id = run_id or new_run_id()
+    plugin_ids = ([cfg.vad_plugin, cfg.ffmpeg_plugin] + list(cfg.transcriber_plugins)
+                  + ([cfg.graph_plugin] if cfg.graph_plugin else []))
     manifest = RunManifest(
         run_id=run_id,
         created_at=time.time(),
         config=cfg.to_dict(),
-        plugins=collect_plugin_info(
-            manager, [cfg.vad_plugin, cfg.ffmpeg_plugin, cfg.transcriber_plugin]
-        ),
+        plugins=collect_plugin_info(manager, plugin_ids),
     )
+    if cfg.graph_plugin:
+        manifest.graph = {
+            "plugin": cfg.graph_plugin,
+            "db_path": (manifest.plugins.get(cfg.graph_plugin) or {}).get("db_path"),
+        }
+    transcriber_config_hashes = {
+        t: str((manifest.plugins.get(t) or {}).get("config_hash") or "")
+        for t in cfg.transcriber_plugins
+    }
     for i, src in enumerate(sources):
         result = await run_source(queue, cfg, str(src), run_id, i)
         if result is None:
@@ -380,5 +435,10 @@ async def run_pipeline(
                 f"run {run_id}: aborted at source {i} ({src}); manifest holds {i} source(s)"
             )
             break
+        if cfg.graph_plugin:
+            result.graph = await emit_source_graph(
+                queue, cfg.graph_plugin, result, transcriber_config_hashes, run_id,
+            )
+            logger.info(f"[src {i}] graph emission: {result.graph}")
         manifest.sources.append(result)
     return manifest
