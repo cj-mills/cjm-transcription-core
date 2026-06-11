@@ -15,7 +15,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
 ]
-dependencies = ['cjm_plugin_system>=0.0.42', 'cjm_media_plugin_system>=0.0.17', 'cjm_transcription_adapter_interface>=0.0.4']
+dependencies = ['cjm_plugin_system>=0.0.43', 'cjm_media_plugin_system>=0.0.17', 'cjm_transcription_adapter_interface>=0.0.5']
 
 [project.urls]
 Repository = "https://github.com/cj-mills/cjm-transcription-core"
