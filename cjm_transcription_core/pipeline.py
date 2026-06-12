@@ -371,7 +371,10 @@ def collect_plugin_info(
     `compute_config_hash` the empirical store keys on) — Transcript node
     identity is (audio segment, transcriber, config_hash), so the manifest must
     carry the hash for downstream id recomputation. `db_path` prefers the
-    effective config over the manifest default (the D19 lesson).
+    effective config over the manifest default (the D19 lesson). Stage 6 (0.2.1): the EFFECTIVE config
+    dict is recorded READABLY beside its hash -- the I8 lesson (a persisted
+    stress config was only diagnosable by hash archaeology; bundle recipients
+    should read model identity directly).
     """
     info: Dict[str, Dict[str, Any]] = {}
     for iid in instance_ids:
@@ -391,6 +394,7 @@ def collect_plugin_info(
             "version": getattr(meta, "version", None),
             "db_path": current_config.get("db_path") or manifest.get("db_path"),
             "config_hash": compute_config_hash(current_config),
+            "config": current_config,
         }
     return info
 

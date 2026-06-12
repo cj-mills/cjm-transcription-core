@@ -99,7 +99,7 @@ class RunManifest:
     graph: Optional[Dict[str, Any]] = None  # Emission target: {plugin, db_path} (None = no emission this run)
 
     FORMAT: str = field(default="cjm-transcription-core/run-manifest", repr=False)  # Manifest format tag
-    VERSION: str = field(default="0.2.0", repr=False)                               # Manifest schema version
+    VERSION: str = field(default="0.2.1", repr=False)                               # Manifest schema version
 
     def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for JSON serialization
         """Serialize to a plain dict with nested sources."""
