@@ -21,6 +21,7 @@ from cjm_plugin_system.core.ports import (
     Composition, CompositionNode, CompositionRun, NodeState, OutputRef,
 )
 from cjm_plugin_system.core.empirical_store import compute_config_hash
+from cjm_plugin_system.core.journal_store import JournalEvent, SubstrateEventType
 from cjm_plugin_system.utils.hashing import hash_file
 
 # Typed wire-kind registration (stage 2): importing the DTO classes is what
@@ -398,6 +399,27 @@ def collect_plugin_info(
         }
     return info
 
+# %% ../nbs/pipeline.ipynb #752bc4ab
+def _journal_run_event(
+    manager: PluginManager,  # Manager owning the journal store
+    event_type: str,         # SubstrateEventType value (run_started / run_finished)
+    run_id: str,             # This run's manifest id
+    actor: Optional[str],    # Who/what initiated the run
+    payload: Dict[str, Any], # Run-level structured detail
+) -> None:
+    """Append a host-tier run event to the journal (CR-14 follow-up).
+
+    The cores are the trusted host writer class: RUN_STARTED/RUN_FINISHED
+    bracket the run so the run manifest (same run_id) links to every job row
+    the run produced. No-op when the manager has no journal store (test
+    doubles); append failures stay LOUD (journal contract).
+    """
+    journal = getattr(manager, "journal_store", None)
+    if journal is None:
+        return
+    journal.append(JournalEvent(
+        event_type=event_type, run_id=run_id, actor=actor, payload=payload))
+
 # %% ../nbs/pipeline.ipynb #e836371d
 async def run_pipeline(
     manager: PluginManager,  # Manager with the capabilities loaded
@@ -405,6 +427,7 @@ async def run_pipeline(
     cfg: PipelineConfig,     # Run configuration
     sources: List[str],      # Source audio paths, in order
     run_id: Optional[str] = None,  # Override run id (default: generated)
+    actor: Optional[str] = None,   # Who/what initiated (journal attribution; CLI default cli:<user>)
 ) -> RunManifest:  # Manifest of everything the run produced
     """Run the transcription pipeline over the given sources, in order.
 
@@ -415,6 +438,17 @@ async def run_pipeline(
     re-runs verify-collide instead of duplicating.
     """
     run_id = run_id or new_run_id()
+    # CR-14 follow-up: queue-scoped run context — every job submitted in this
+    # run carries run_id/actor into its journal rows + worker diagnostics
+    # (run-manifest <-> journal linkage); the run itself is bracketed by
+    # RUN_STARTED/RUN_FINISHED host-tier rows.
+    queue.set_run_context(run_id=run_id, actor=actor)
+    _journal_run_event(manager, SubstrateEventType.RUN_STARTED.value, run_id, actor, {
+        "core": "cjm-transcription-core",
+        "sources": [str(s) for s in sources],
+        "transcribers": list(cfg.transcriber_plugins),
+        "graph_plugin": cfg.graph_plugin,
+    })
     plugin_ids = ([cfg.vad_plugin, cfg.ffmpeg_plugin] + list(cfg.transcriber_plugins)
                   + ([cfg.graph_plugin] if cfg.graph_plugin else []))
     manifest = RunManifest(
@@ -432,17 +466,33 @@ async def run_pipeline(
         t: str((manifest.plugins.get(t) or {}).get("config_hash") or "")
         for t in cfg.transcriber_plugins
     }
-    for i, src in enumerate(sources):
-        result = await run_source(queue, cfg, str(src), run_id, i)
-        if result is None:
-            logger.warning(
-                f"run {run_id}: aborted at source {i} ({src}); manifest holds {i} source(s)"
-            )
-            break
-        if cfg.graph_plugin:
-            result.graph = await emit_source_graph(
-                queue, cfg.graph_plugin, result, transcriber_config_hashes, run_id,
-            )
-            logger.info(f"[src {i}] graph emission: {result.graph}")
-        manifest.sources.append(result)
+    status = "completed"
+    try:
+        for i, src in enumerate(sources):
+            result = await run_source(queue, cfg, str(src), run_id, i)
+            if result is None:
+                logger.warning(
+                    f"run {run_id}: aborted at source {i} ({src}); manifest holds {i} source(s)"
+                )
+                status = "aborted"
+                break
+            if cfg.graph_plugin:
+                result.graph = await emit_source_graph(
+                    queue, cfg.graph_plugin, result, transcriber_config_hashes, run_id,
+                )
+                logger.info(f"[src {i}] graph emission: {result.graph}")
+            manifest.sources.append(result)
+    except BaseException as e:
+        # The journal exists for exactly this row: a run that DIED records
+        # how far it got (failures stop being the unattributed case).
+        _journal_run_event(manager, SubstrateEventType.RUN_FINISHED.value, run_id, actor, {
+            "core": "cjm-transcription-core", "status": "failed", "error": repr(e),
+            "sources_completed": len(manifest.sources), "sources_total": len(sources),
+        })
+        raise
+    _journal_run_event(manager, SubstrateEventType.RUN_FINISHED.value, run_id, actor, {
+        "core": "cjm-transcription-core", "status": status,
+        "sources_completed": len(manifest.sources), "sources_total": len(sources),
+        "segments": sum(len(s.segments) for s in manifest.sources),
+    })
     return manifest

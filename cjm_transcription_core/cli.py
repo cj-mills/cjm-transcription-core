@@ -10,6 +10,7 @@ __all__ = ['logger', 'build_parser', 'parse_max_concurrent', 'load_capabilities'
 # %% ../nbs/cli.ipynb #5f7a1ed8
 import argparse
 import asyncio
+import getpass
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -56,6 +57,8 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     run.add_argument("--force", action="store_true", help="Bypass capability-side caches (VAD + transcription)")
     run.add_argument("-y", "--yes", action="store_true", help="Auto-accept HITL seams (headless mode)")
     run.add_argument("--output", default=None, help="Run-manifest output path (default: runs/<run_id>.json)")
+    run.add_argument("--actor", default=None,
+                     help="Journal attribution for who/what initiated this run (default: cli:<username>)")
     run.add_argument("-v", "--verbose", action="store_true", help="DEBUG-level logging")
     return parser
 
@@ -145,7 +148,10 @@ async def run_command(
     queue = JobQueue(deps=manager, sysmon_plugin_name=args.sysmon_plugin)
     await queue.start()
     try:
-        manifest = await run_pipeline(manager, queue, cfg, sources)
+        # CR-14 follow-up: actor attribution (operator identity by default;
+        # agents/services pass --actor explicitly).
+        actor = args.actor or f"cli:{getpass.getuser()}"
+        manifest = await run_pipeline(manager, queue, cfg, sources, actor=actor)
     finally:
         await queue.stop()
         for iid in reversed(load_order):  # Reverse load order; the monitor unloads last
