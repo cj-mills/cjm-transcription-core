@@ -27,7 +27,7 @@ from cjm_plugin_system.utils.hashing import hash_file
 # Typed wire-kind registration (stage 2): importing the DTO classes is what
 # lets the proxy's wire_decode hand this host process TYPED results.
 from cjm_media_plugin_system.core import MediaAnalysisResult
-from cjm_transcription_adapter_interface.core import TranscriptionResult
+from cjm_capability_primitives.transcription import TranscriptionResult
 
 from cjm_transcription_core.models import (
     PipelineConfig,
@@ -162,8 +162,7 @@ def build_segment_composition(
                 "job_id": job_id,
                 "source_start_time": start,
                 "source_end_time": end,
-                "force": force,
-            }))
+            }, task_name="transcription", method="transcribe", control={"force": force}))
             transcribe_nodes[transcriber_id] = tr
             job_ids[transcriber_id] = job_id
         metas.append({"index": idx, "segment_path": seg_path, "start": start,
