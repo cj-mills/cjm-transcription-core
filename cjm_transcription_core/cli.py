@@ -40,6 +40,10 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
                           "(lightweight + accuracy) comparison run (default: cjm-transcription-plugin-whisper)")
     run.add_argument("--vad-plugin", default="cjm-media-plugin-silero-vad", help="VAD capability name")
     run.add_argument("--ffmpeg-plugin", default="cjm-media-plugin-ffmpeg", help="Convert/segment capability name")
+    run.add_argument("--preprocessing-plugin", default=None,
+                     help="Opt-in audio-preprocessing capability (e.g. cjm-media-plugin-demucs for vocals "
+                          "isolation); runs per-segment on FULL-BAND audio BEFORE the model-input convert, "
+                          "via the source_separation task channel (default: no preprocessing)")
     run.add_argument("--graph-plugin", default=None,
                      help="Graph-storage capability for Source/AudioSegment/Transcript emission "
                           "(CR-18 revolution 2); default: no emission, manifest-only run")
@@ -54,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     run.add_argument("--max-segment-duration", type=float, default=300.0, help="Wall-clock cap per segment in seconds")
     run.add_argument("--sample-rate", type=int, default=16000, help="Model-input sample rate")
     run.add_argument("--channels", type=int, default=1, help="Model-input channel count")
-    run.add_argument("--force", action="store_true", help="Bypass capability-side caches (VAD + transcription)")
+    run.add_argument("--force", action="store_true", help="Bypass capability-side caches (VAD + transcription + preprocessing)")
     run.add_argument("-y", "--yes", action="store_true", help="Auto-accept HITL seams (headless mode)")
     run.add_argument("--output", default=None, help="Run-manifest output path (default: runs/<run_id>.json)")
     run.add_argument("--actor", default=None,
@@ -113,6 +117,7 @@ async def run_command(
         vad_plugin=args.vad_plugin,
         ffmpeg_plugin=args.ffmpeg_plugin,
         transcriber_plugins=transcribers,
+        preprocessing_plugin=args.preprocessing_plugin,
         graph_plugin=args.graph_plugin,
         graph_db_path=args.graph_db_path,
         max_segment_duration=args.max_segment_duration,
@@ -137,7 +142,11 @@ async def run_command(
         search_paths=[Path(args.manifests_dir)],
         sysmon_plugin_name=args.sysmon_plugin,
     )
-    instance_ids = ([cfg.ffmpeg_plugin, cfg.vad_plugin] + list(cfg.transcriber_plugins)
+    # Preprocessing (opt-in) loads alongside the other compute capabilities; its
+    # adapter auto-binds by surface match exactly like VAD/transcription.
+    instance_ids = ([cfg.ffmpeg_plugin, cfg.vad_plugin]
+                    + ([cfg.preprocessing_plugin] if cfg.preprocessing_plugin else [])
+                    + list(cfg.transcriber_plugins)
                     + ([cfg.graph_plugin] if cfg.graph_plugin else []))
     load_order = ([args.sysmon_plugin] if args.sysmon_plugin else []) + instance_ids
     # --graph-db-path threads a caller-wins config into the graph load (C8/F10).
@@ -165,6 +174,8 @@ async def run_command(
     done = sum(len(s.segments) for s in manifest.sources)
     print(f"run manifest: {out}")
     print(f"sources completed: {len(manifest.sources)}/{len(sources)}  segments: {done}  transcribers: {len(transcribers)}")
+    if cfg.preprocessing_plugin:
+        print(f"preprocessing: {cfg.preprocessing_plugin} ({cfg.preprocessing_task}/{cfg.preprocessing_method})")
     if cfg.graph_plugin:
         for s in manifest.sources:
             print(f"graph emission [{Path(s.source_path).name}]: {s.graph}")

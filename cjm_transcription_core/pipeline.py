@@ -25,9 +25,12 @@ from cjm_plugin_system.core.journal_store import JournalEvent, SubstrateEventTyp
 from cjm_plugin_system.utils.hashing import hash_file
 
 # Typed wire-kind registration (stage 2): importing the DTO classes is what
-# lets the proxy's wire_decode hand this host process TYPED results.
+# lets the proxy's wire_decode hand this host process TYPED results. Stage 8:
+# source_separation.result is registered too, so the preprocessing node's typed
+# output is decoded host-side and OutputRef can extract its `output_path`.
 from cjm_capability_primitives.vad import VADResult
 from cjm_capability_primitives.transcription import TranscriptionResult
+from cjm_capability_primitives.source_separation import SourceSeparationResult
 
 from cjm_transcription_core.models import (
     PipelineConfig,
@@ -147,16 +150,25 @@ def build_segment_composition(
     sample_rate: int = 16000,  # Model-input sample rate
     channels: int = 1,         # Model-input channel count
     force: bool = False,       # Per-call cache-bypass control flag
+    preprocessing_plugin: Optional[str] = None,    # Opt-in audio-preprocessing capability (None = off)
+    preprocessing_task: str = "source_separation", # Task-channel task for the preprocessing step
+    preprocessing_method: str = "separate_vocals", # Task-channel method for the preprocessing step
 ) -> Tuple[Composition, List[Dict[str, Any]]]:  # (composition, per-segment meta rows)
-    """Build the per-source fan-out composition: N independent convert→(T× transcribe) pipes.
+    """Build the per-source fan-out composition: N independent [preprocess→]convert→(T× transcribe) pipes.
 
     Host-constructed fan-out (stage-3 ratified shape): the host computes every
-    per-item kwarg statically; the only execution-time unknown, ffmpeg's hashed
-    `cache_dir_for_config` output path, flows through the `OutputRef` binding.
-    Stage 5 (dual-transcriber = the named parallel-port adopter): each segment's
-    convert output fans out to ONE transcribe node PER TRANSCRIBER — the
-    lightweight ∥ accuracy comparison runs as one composition; the transcribe
-    nodes are independent and parallelize under the queue's empirical admission.
+    per-item kwarg statically; the only execution-time unknowns — the hashed
+    output paths of the preprocessing + convert steps — flow through `OutputRef`
+    bindings. Stage 5 (dual-transcriber = the named parallel-port adopter): each
+    segment's convert output fans out to ONE transcribe node PER TRANSCRIBER.
+
+    Stage 8 (opt-in preprocessing): when `preprocessing_plugin` is set, a
+    preprocessing node (e.g. Demucs vocals isolation) runs FIRST on the FULL-BAND
+    raw segment, and the model-input convert consumes ITS output (vocals →
+    convert → transcribe). The convert output — recorded as `model_input_path` —
+    is therefore the vocals-isolated model-ready WAV, which decomp's VAD+FA
+    inherit for free. Routed through the task channel by (preprocessing_task,
+    preprocessing_method) so the slot is FAMILY-AGNOSTIC.
     """
     nodes: List[CompositionNode] = []
     metas: List[Dict[str, Any]] = []
@@ -167,9 +179,23 @@ def build_segment_composition(
         seg_path = str(seg.get("output_path", ""))
         start = float(seg.get("start", 0.0))
         end = float(seg.get("end", 0.0))
+
+        # Stage 8: optional preprocessing on the FULL-BAND raw segment, BEFORE the
+        # model-input convert. The convert then consumes the preprocessed output
+        # (vocals), so model_input_path becomes the vocals-isolated WAV.
+        convert_input: Any = seg_path
+        separate_node: Optional[str] = None
+        if preprocessing_plugin:
+            separate_node = f"separate_{idx:04d}"
+            nodes.append(CompositionNode(separate_node, preprocessing_plugin, {
+                "audio": seg_path,
+            }, task_name=preprocessing_task, method=preprocessing_method,
+               control={"force": force}))
+            convert_input = OutputRef(separate_node, "output_path")
+
         conv = f"convert_{idx:04d}"
         nodes.append(CompositionNode(conv, ffmpeg_id, {
-            "action": "convert", "input_path": seg_path,
+            "action": "convert", "input_path": convert_input,
             "output_format": "wav", "sample_rate": sample_rate, "channels": channels,
         }))
         transcribe_nodes: Dict[str, str] = {}
@@ -189,6 +215,7 @@ def build_segment_composition(
             job_ids[transcriber_id] = job_id
         metas.append({"index": idx, "segment_path": seg_path, "start": start,
                       "end": end, "job_ids": job_ids, "convert_node": conv,
+                      "separate_node": separate_node,
                       "transcribe_nodes": transcribe_nodes})
     return Composition(nodes=nodes), metas
 
@@ -312,7 +339,7 @@ async def run_source(
     run_id: str,          # Run id (prefixes per-segment job ids)
     source_index: int,    # Position of this source within the run
 ) -> Optional[SourceResult]:  # None when the operator aborts at a seam
-    """Run the full pipeline for one source: VAD → boundaries → cut → convert → transcribe."""
+    """Run the full pipeline for one source: VAD → boundaries → cut → [preprocess →] convert → transcribe."""
     t0 = time.time()
     logger.info(f"[src {source_index}] {source_path}")
 
@@ -323,7 +350,9 @@ async def run_source(
     #    for VAD, then run VAD on it. Stage 8: VAD operates on model-ready audio
     #    (the in-tool librosa decode/resample retired). Boundaries come back in
     #    seconds, so they apply to the ORIGINAL source for cutting (step 4).
-    #    (duration falls back to an ffmpeg probe when unreported)
+    #    (duration falls back to an ffmpeg probe when unreported). NOTE: the
+    #    chunking VAD runs on the RAW (converted) source — preprocessing applies
+    #    to the per-segment transcription/decomp path, not this chunking pass.
     vad_audio = await convert_for_vad(queue, cfg.ffmpeg_plugin, source_path,
                                       sample_rate=cfg.sample_rate, channels=cfg.channels)
     chunks, duration = await analyze_vad(queue, cfg.vad_plugin, vad_audio, force=cfg.force)
@@ -350,12 +379,17 @@ async def run_source(
     # 4. Cut the source at the boundaries
     raw_segments, batch_key = await cut_segments(queue, cfg.ffmpeg_plugin, source_path, boundaries)
 
-    # 5. Per segment: convert → (T× transcribe) as ONE composition of N
-    # independent pipes (CR-16 ports; stage-5 dual-transcriber fan-out).
+    # 5. Per segment: [preprocess →] convert → (T× transcribe) as ONE composition
+    # of N independent pipes (CR-16 ports; stage-5 dual-transcriber fan-out;
+    # stage-8 opt-in preprocessing). When cfg.preprocessing_plugin is set, each
+    # segment's full-band audio is vocals-isolated before the model-input convert.
     comp, metas = build_segment_composition(
         raw_segments, run_id, source_index,
         cfg.ffmpeg_plugin, cfg.transcriber_plugins,
         sample_rate=cfg.sample_rate, channels=cfg.channels, force=cfg.force,
+        preprocessing_plugin=cfg.preprocessing_plugin,
+        preprocessing_task=cfg.preprocessing_task,
+        preprocessing_method=cfg.preprocessing_method,
     )
     comp_id = await queue.submit_composition(comp)
     crun = await queue.wait_for_composition(comp_id)
@@ -363,6 +397,8 @@ async def run_source(
 
     # 5b. Content-address the model-input WAVs (AudioSegment provenance; the
     # audio of record, E14 — graph emission + downstream slice refs hang off it).
+    # Under preprocessing this is the VOCALS-isolated model-input (its hash thus
+    # differs from a non-preprocessed run — the separate-graph requirement).
     for r in records:
         if r.model_input_path:
             r.model_input_hash = hash_file(r.model_input_path)
@@ -474,9 +510,12 @@ async def run_pipeline(
         "core": "cjm-transcription-core",
         "sources": [str(s) for s in sources],
         "transcribers": list(cfg.transcriber_plugins),
+        "preprocessing_plugin": cfg.preprocessing_plugin,
         "graph_plugin": cfg.graph_plugin,
     })
-    plugin_ids = ([cfg.vad_plugin, cfg.ffmpeg_plugin] + list(cfg.transcriber_plugins)
+    plugin_ids = ([cfg.vad_plugin, cfg.ffmpeg_plugin]
+                  + ([cfg.preprocessing_plugin] if cfg.preprocessing_plugin else [])
+                  + list(cfg.transcriber_plugins)
                   + ([cfg.graph_plugin] if cfg.graph_plugin else []))
     manifest = RunManifest(
         run_id=run_id,
@@ -493,6 +532,12 @@ async def run_pipeline(
         t: str((manifest.plugins.get(t) or {}).get("config_hash") or "")
         for t in cfg.transcriber_plugins
     }
+    # Stage 8: a non-identity AudioSegment descriptor labelling which preprocessing
+    # produced the model-input (capability name + its effective config hash).
+    preprocessing_desc = None
+    if cfg.preprocessing_plugin:
+        pp = manifest.plugins.get(cfg.preprocessing_plugin) or {}
+        preprocessing_desc = f"{cfg.preprocessing_plugin}@{pp.get('config_hash') or ''}"
     status = "completed"
     try:
         for i, src in enumerate(sources):
@@ -506,6 +551,7 @@ async def run_pipeline(
             if cfg.graph_plugin:
                 result.graph = await emit_source_graph(
                     queue, cfg.graph_plugin, result, transcriber_config_hashes, run_id,
+                    preprocessing=preprocessing_desc,
                 )
                 logger.info(f"[src {i}] graph emission: {result.graph}")
             manifest.sources.append(result)

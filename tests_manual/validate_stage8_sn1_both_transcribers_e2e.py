@@ -61,16 +61,20 @@ VOXTRAL = "cjm-transcription-plugin-voxtral-hf"
 # (0.2) makes it SAMPLE on hard segments, so the spine text — and therefore the
 # empty-prune count + the cross-transcriber divergence count — vary run-to-run on a
 # COLD re-transcribe (cache-backed re-derivation is stable). That variability is the
-# feature (it surfaces hard spots), not a regression. A specific run measured
-# 326 empty / 1,182 divergence; the old multi-source corpus's applied prune_empty
-# recorded 320 / 1,176 — both legitimate, neither an invariant. We assert the
-# deterministic facts instead and treat empty/divergence as informational.
+# feature (it surfaces hard spots), not a regression. A soxr-stack run measured
+# 333 empty / 1,223 divergence (silero session: 324 / 1,215) — both legitimate,
+# neither an invariant. We assert the deterministic facts instead and treat
+# empty/divergence as informational.
+# REBASELINED 2026-06-16 to the soxr resampler stack (L22 carry-forward discharged
+# during the Demucs migration): voxtral 261,617→261,519, fine spine 3,579→3,521;
+# the coarse count (55) + graph-node surface (166) were soxr-stable. Numbers
+# verified by a fresh no-preprocessing both-transcriber SN-I run on the current stack.
 EXPECT_SOURCE_ID = "24461366-6548-5b93-80ae-a03c463443bf"  # UUIDv5(SN-I file hash) — conserved across the migration
 EXPECT_TX_SEGMENTS = 55        # coarse pipeline segments (VAD-deterministic)
 EXPECT_GRAPH_NODES = 166       # 1 Source + 55 AudioSegment + 55 whisper-Tx + 55 voxtral-Tx (id = aseg·transcriber·config_hash)
-EXPECT_SEGMENT_NODES = 3579    # fine spine (boundary-deterministic UUIDv5)
-EXPECT_VOXTRAL_CHARS = 261617  # voxtral-mini greedy decode (do_sample=False) — DETERMINISTIC, byte-identical to the pre-migration corpus
-WHISPER_CHARS_NOMINAL = 260464 # whisper-base — informational; varies ±tens of chars on cold re-transcribe (fallback sampling)
+EXPECT_SEGMENT_NODES = 3521    # fine spine (boundary-deterministic UUIDv5; soxr-rebaselined from 3579)
+EXPECT_VOXTRAL_CHARS = 261519  # voxtral-mini greedy decode (do_sample=False) — DETERMINISTIC; soxr-rebaselined from 261617
+WHISPER_CHARS_NOMINAL = 260368 # whisper-base — informational; varies ±tens of chars on cold re-transcribe (fallback sampling)
 WHISPER_CHARS_TOL = 2000       # generous band; whisper spine is the non-deterministic detector, not a pinned baseline
 
 

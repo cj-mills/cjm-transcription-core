@@ -25,10 +25,19 @@ class PipelineConfig:
         default_factory=lambda: ["cjm-transcription-plugin-whisper"])
     graph_plugin: Optional[str] = None   # Graph-storage capability for Source/AudioSegment/Transcript emission (None = no emission)
     graph_db_path: Optional[str] = None  # Explicit graph DB path override (caller-wins config, C8/F10)
+    # Opt-in audio preprocessing (stage 8 — Demucs source separation is the first
+    # family). When set, each ~5-min segment is preprocessed BEFORE the model-input
+    # convert: full-band segment -> separate_vocals -> convert -> transcribe / (decomp) VAD+FA.
+    # The slot is FAMILY-AGNOSTIC: it routes through the task channel by
+    # (preprocessing_task, preprocessing_method), so a future preprocessing family
+    # (e.g. speech-enhancement) drops in by changing those, not the pipeline.
+    preprocessing_plugin: Optional[str] = None        # Preprocessing capability instance id (None = preprocessing OFF)
+    preprocessing_task: str = "source_separation"     # Task-channel task for the preprocessing step
+    preprocessing_method: str = "separate_vocals"     # Task-channel method for the preprocessing step
     max_segment_duration: float = 300.0  # Wall-clock cap per segment in seconds (pre-emptive cuts)
     sample_rate: int = 16000             # Model-input sample rate for the per-segment convert step
     channels: int = 1                    # Model-input channel count
-    force: bool = False                  # Bypass capability-side caches (VAD + transcription)
+    force: bool = False                  # Bypass capability-side caches (VAD + transcription + preprocessing)
     assume_yes: bool = False             # Auto-accept HITL seams (headless / corpus-generation mode)
 
     def to_dict(self) -> Dict[str, Any]:  # Plain-dict snapshot for the run manifest
