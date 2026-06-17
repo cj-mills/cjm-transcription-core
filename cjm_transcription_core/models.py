@@ -77,6 +77,7 @@ class SourceResult:
     batch_key: str          # ffmpeg `segment_audio` batch key linking the cut files
     content_hash: str = ""  # Content hash over the source file (Source node identity input)
     segments: List[SegmentRecord] = field(default_factory=list)  # Ordered transcribed segments
+    chain: List[str] = field(default_factory=list)  # Preprocessing chain that produced the model-inputs ([] = raw convert-only); AudioRendition identity input — extenders recompute the rendition id from it
     graph: Optional[Dict[str, Any]] = None  # Emission record: {source_node_id, nodes_added, nodes_verified, edges_added} (None = not emitted)
 
     def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for the run manifest
@@ -88,6 +89,7 @@ class SourceResult:
             "batch_key": self.batch_key,
             "content_hash": self.content_hash,
             "segments": [s.to_dict() for s in self.segments],
+            "chain": list(self.chain),
             "graph": self.graph,
         }
 
@@ -96,10 +98,12 @@ class SourceResult:
 class RunManifest:
     """Durable record of one pipeline run (proto-bundle; see CR-20).
 
-    Schema 0.2.0 (stage 5): per-segment `transcripts` keyed by transcriber +
-    source `content_hash` + per-segment `model_input_hash` + plugin
-    `config_hash` — everything a downstream extender needs to RECOMPUTE the
-    deterministic graph node ids (no search, no stored-id coupling)."""
+    Schema 0.3.0 (AudioRendition era): per-source `chain` records the
+    preprocessing chain that produced the model-inputs ([] = raw convert-only),
+    so a downstream extender can RECOMPUTE the deterministic AudioRendition node
+    id (and the Transcript/Segment ids keyed on it) with no search. Builds on
+    0.2.0's per-segment `transcripts` keyed by transcriber + source
+    `content_hash` + per-segment `model_input_hash` + plugin `config_hash`."""
     run_id: str                       # Unique run identifier
     created_at: float                 # Unix timestamp at run start
     config: Dict[str, Any]            # PipelineConfig snapshot
@@ -108,7 +112,7 @@ class RunManifest:
     graph: Optional[Dict[str, Any]] = None  # Emission target: {plugin, db_path} (None = no emission this run)
 
     FORMAT: str = field(default="cjm-transcription-core/run-manifest", repr=False)  # Manifest format tag
-    VERSION: str = field(default="0.2.1", repr=False)                               # Manifest schema version
+    VERSION: str = field(default="0.3.0", repr=False)                               # Manifest schema version
 
     def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for JSON serialization
         """Serialize to a plain dict with nested sources."""

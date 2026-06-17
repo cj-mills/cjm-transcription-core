@@ -15,7 +15,9 @@ from cjm_plugin_system.core.queue import JobQueue
 from cjm_context_graph_layer.grammar import spine_edges
 from cjm_context_graph_layer.ops import extend_graph
 from cjm_context_graph_layer.declare import Derivation, derivation_to_graph
-from cjm_transcript_graph_schema.schema import SourceNode, AudioSegmentNode, TranscriptNode
+from cjm_transcript_graph_schema.schema import (
+    SourceNode, AudioSegmentNode, AudioRenditionNode, TranscriptNode,
+)
 
 from .models import SourceResult
 
@@ -23,34 +25,37 @@ logger = logging.getLogger(__name__)
 
 # %% ../nbs/emission.ipynb #fbacb912
 def build_source_emission(
-    src: SourceResult,                          # Completed per-source pipeline result (0.2.0 shape)
+    src: SourceResult,                          # Completed per-source pipeline result (0.3.0 shape)
     transcriber_config_hashes: Dict[str, str],  # transcriber -> effective config hash (Transcript identity input)
-    preprocessing: Optional[str] = None,        # Audio-preprocessing descriptor (e.g. "cjm-media-plugin-demucs@<cfg12>"); None = none applied
+    chain: Optional[List[str]] = None,          # Preprocessing chain that produced the model-inputs ([]/None = raw convert-only)
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:  # (nodes, edges, ids)
     """Build the graph-root payload for one source (pure; no capability calls).
 
     Emits the locked layer schema: one `Source` (identity = file content hash)
-    -> coarse `AudioSegment` spine (PART_OF / NEXT / STARTS_WITH via
-    `spine_edges`) -> per-transcriber `Transcript` variants (DERIVED_FROM their
-    AudioSegment; identity mirrors the capability cache key). Returns the ids
-    dict {"source", "audio_segments", "transcripts"} for callers (decomp
-    recomputes these same ids from the manifest — no stored-id coupling).
+    -> coarse `AudioSegment` boundary spine (PART_OF / NEXT / STARTS_WITH via
+    `spine_edges`) -> one `AudioRendition` per segment (the model-input WAV; it
+    DERIVED_FROM its AudioSegment) -> per-transcriber `Transcript` variants
+    (DERIVED_FROM their rendition; identity mirrors the capability cache key).
+    Returns the ids dict {"source", "audio_segments", "renditions",
+    "transcripts"} for callers (decomp recomputes these same ids from the
+    manifest — no stored-id coupling).
 
-    `preprocessing` (when set) is recorded as a NON-IDENTITY descriptor property
-    on each AudioSegment so a single-config preprocessed graph is self-describing
-    (which audio-preprocessing produced its model-input). INTERIM pending the
-    AudioRendition-node schema work ([[audio-rendition-node-deferred]]): the
-    model_input_hash already differs raw-vs-vocals (the SourceRef content-hash),
-    so raw + preprocessed AudioSegments cannot coexist in one graph today (the
-    layer's verify-if-present loud-fails on the content-hash mismatch); this
-    property just labels the variant within its own (separate) graph.
+    `chain` is the AudioRendition IDENTITY input: an empty chain is the raw
+    convert-only rendition; a non-empty chain (e.g. demucs vocals) yields a
+    DISTINCT rendition node under the SAME AudioSegment, so raw + preprocessed
+    model-inputs of one boundary COEXIST in one graph (the divergent
+    model_input_hash now lives on distinct rendition nodes, not a colliding
+    AudioSegment). The chain rides into the node id, so re-derivation reproduces
+    it from the manifest alone.
     """
     if not src.content_hash:
         raise ValueError(f"source {src.source_path} has no content_hash — emission identity requires it")
+    chain = list(chain or [])
     source = SourceNode(content_hash=src.content_hash, path=src.source_path)
     nodes: List[Dict[str, Any]] = [source.to_graph_node()]
     edges: List[Dict[str, Any]] = []
     aseg_ids: List[str] = []
+    rendition_ids: List[str] = []
     transcript_ids: Dict[str, List[str]] = {}
 
     for rec in src.segments:
@@ -58,29 +63,32 @@ def build_source_emission(
             raise ValueError(f"segment {rec.index} has no model_input_hash — emission identity requires it")
         aseg = AudioSegmentNode(
             source=source.id, index=rec.index, start=rec.start, end=rec.end,
-            model_input_path=rec.model_input_path, model_input_hash=rec.model_input_hash,
             segment_path=rec.segment_path,
         )
-        aseg_node = aseg.to_graph_node()
-        if preprocessing:
-            # Non-identity provenance label (interim; see docstring). Property adds
-            # don't affect the layer's identity-mismatch check (label + sources hash).
-            aseg_node["properties"]["preprocessing"] = preprocessing
-        nodes.append(aseg_node)
+        nodes.append(aseg.to_graph_node())
         aseg_ids.append(aseg.id)
+        # The model-input WAV is the rendition's, not the boundary's.
+        rendition = AudioRenditionNode(
+            audio_segment=aseg.id, model_input_path=rec.model_input_path,
+            model_input_hash=rec.model_input_hash, chain=chain,
+        )
+        nodes.append(rendition.to_graph_node())
+        edges.append(rendition.derived_edge())  # rendition DERIVED_FROM its AudioSegment
+        rendition_ids.append(rendition.id)
         for tname, tr in rec.transcripts.items():
             tnode = TranscriptNode(
-                audio_segment=aseg.id, transcriber=tname,
+                rendition=rendition.id, transcriber=tname,
                 config_hash=transcriber_config_hashes.get(tname, ""),
                 text=str(tr.get("text") or ""), audio_hash=rec.model_input_hash,
                 metadata=dict(tr.get("metadata") or {}),
             )
             nodes.append(tnode.to_graph_node())
-            edges.append(tnode.derived_edge())
+            edges.append(tnode.derived_edge())  # transcript DERIVED_FROM its rendition
             transcript_ids.setdefault(tname, []).append(tnode.id)
 
     edges = spine_edges(source.id, aseg_ids) + edges
-    ids = {"source": source.id, "audio_segments": aseg_ids, "transcripts": transcript_ids}
+    ids = {"source": source.id, "audio_segments": aseg_ids,
+           "renditions": rendition_ids, "transcripts": transcript_ids}
     return nodes, edges, ids
 
 # %% ../nbs/emission.ipynb #7a2d6cab
@@ -90,25 +98,37 @@ async def emit_source_graph(
     src: SourceResult,                          # Completed per-source pipeline result
     transcriber_config_hashes: Dict[str, str],  # transcriber -> effective config hash
     run_id: str,                                # Run id (recorded on the boundary Derivation event)
-    preprocessing: Optional[str] = None,        # Audio-preprocessing descriptor (non-identity AudioSegment label); None = none
+    chain: Optional[List[str]] = None,          # Preprocessing chain that produced the model-inputs ([]/None = raw)
 ) -> Dict[str, Any]:  # Emission record for the manifest
     """Idempotently emit one source's graph root through the task channel.
 
     `extend_graph` = emit-if-absent + verify-if-present, so a re-run over
     cached content collides into a verified no-op (stress item 4) and a second
     transcriber's run EXTENDS the existing root (only its Transcript nodes are
-    new). The host's boundary computation is declared as a `Derivation` event
-    (provenance-by-declaration) ONLY when this run actually created
-    AudioSegment nodes — verified re-emissions don't spam the audit trail.
+    new). The host's contribution this run — boundary computation and/or the
+    preprocessing chain that produced new renditions — is declared as a
+    `Derivation` event (provenance-by-declaration) ONLY when it actually created
+    AudioSegment or AudioRendition nodes (a preprocessing-ON run into a graph
+    that already holds the raw boundaries creates new renditions but no new
+    boundaries — both cases declare; verified re-emissions don't spam the audit
+    trail).
     """
-    nodes, edges, ids = build_source_emission(src, transcriber_config_hashes, preprocessing=preprocessing)
+    chain = list(chain or [])
+    nodes, edges, ids = build_source_emission(src, transcriber_config_hashes, chain=chain)
     res = await extend_graph(queue, graph_id, nodes, edges)
-    newly_created_asegs = set(ids["audio_segments"]) & set(res.added_node_ids)
-    if newly_created_asegs:
+    added = set(res.added_node_ids)
+    new_asegs = [a for a in ids["audio_segments"] if a in added]
+    new_renditions = [r for r in ids["renditions"] if r in added]
+    if new_asegs or new_renditions:
+        parts = (["segment-boundaries"] if new_asegs else []) + (["preprocessing"] if (chain and new_renditions) else [])
+        method = ("+".join(parts) or "renditions") + "/v1"
+        props: Dict[str, Any] = {"run_id": run_id}
+        if chain:
+            props["chain"] = list(chain)
         d = Derivation(
-            actor="host:cjm-transcription-core", method="segment-boundaries/v1",
-            input_ids=[ids["source"]], output_ids=list(ids["audio_segments"]),
-            properties={"run_id": run_id, **({"preprocessing": preprocessing} if preprocessing else {})},
+            actor="host:cjm-transcription-core", method=method,
+            input_ids=[ids["source"]], output_ids=new_asegs + new_renditions,
+            properties=props,
         )
         dn, de = derivation_to_graph(d)
         await extend_graph(queue, graph_id, [dn], de)

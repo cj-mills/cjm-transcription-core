@@ -71,8 +71,8 @@ VOXTRAL = "cjm-transcription-plugin-voxtral-hf"
 # verified by a fresh no-preprocessing both-transcriber SN-I run on the current stack.
 EXPECT_SOURCE_ID = "24461366-6548-5b93-80ae-a03c463443bf"  # UUIDv5(SN-I file hash) — conserved across the migration
 EXPECT_TX_SEGMENTS = 55        # coarse pipeline segments (VAD-deterministic)
-EXPECT_GRAPH_NODES = 166       # 1 Source + 55 AudioSegment + 55 whisper-Tx + 55 voxtral-Tx (id = aseg·transcriber·config_hash)
-EXPECT_SEGMENT_NODES = 3521    # fine spine (boundary-deterministic UUIDv5; soxr-rebaselined from 3579)
+EXPECT_GRAPH_NODES = 221       # 1 Source + 55 AudioSegment + 55 raw AudioRendition + 55 whisper-Tx + 55 voxtral-Tx; AudioRendition-era rebaseline from 166 (+55 raw renditions — the model-input moved off the boundary onto its rendition; chain=[] for a no-preprocessing run)
+EXPECT_SEGMENT_NODES = 3521    # fine spine (boundary-deterministic UUIDv5; soxr-rebaselined from 3579; rendition-keyed but count unchanged for the raw spine)
 EXPECT_VOXTRAL_CHARS = 261519  # voxtral-mini greedy decode (do_sample=False) — DETERMINISTIC; soxr-rebaselined from 261617
 WHISPER_CHARS_NOMINAL = 260368 # whisper-base — informational; varies ±tens of chars on cold re-transcribe (fallback sampling)
 WHISPER_CHARS_TOL = 2000       # generous band; whisper spine is the non-deterministic detector, not a pinned baseline

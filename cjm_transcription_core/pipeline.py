@@ -497,8 +497,8 @@ async def run_pipeline(
     An operator abort at any seam stops the run; the manifest holds the sources
     completed so far (capability-side caches make re-runs cheap). With
     `cfg.graph_plugin` set, each completed source EMITS the graph root
-    (Source → AudioSegment → Transcript; CR-18 revolution 2) idempotently —
-    re-runs verify-collide instead of duplicating.
+    (Source → AudioSegment → AudioRendition → Transcript; CR-18 revolution 2)
+    idempotently — re-runs verify-collide instead of duplicating.
     """
     run_id = run_id or new_run_id()
     # CR-14 follow-up: queue-scoped run context — every job submitted in this
@@ -532,12 +532,15 @@ async def run_pipeline(
         t: str((manifest.plugins.get(t) or {}).get("config_hash") or "")
         for t in cfg.transcriber_plugins
     }
-    # Stage 8: a non-identity AudioSegment descriptor labelling which preprocessing
-    # produced the model-input (capability name + its effective config hash).
-    preprocessing_desc = None
+    # AudioRendition era: the preprocessing chain that produced the model-inputs
+    # ([] = raw convert-only). It is the AudioRendition IDENTITY input — recorded
+    # per-source in the manifest so a downstream extender recomputes the rendition
+    # id (and the Transcript/Segment ids keyed on it) with no search. One step
+    # today: "<task>:<plugin>@<effective config hash>".
+    preprocessing_chain: List[str] = []
     if cfg.preprocessing_plugin:
         pp = manifest.plugins.get(cfg.preprocessing_plugin) or {}
-        preprocessing_desc = f"{cfg.preprocessing_plugin}@{pp.get('config_hash') or ''}"
+        preprocessing_chain = [f"{cfg.preprocessing_task}:{cfg.preprocessing_plugin}@{pp.get('config_hash') or ''}"]
     status = "completed"
     try:
         for i, src in enumerate(sources):
@@ -548,10 +551,11 @@ async def run_pipeline(
                 )
                 status = "aborted"
                 break
+            result.chain = list(preprocessing_chain)  # record the rendition-identity chain in the manifest
             if cfg.graph_plugin:
                 result.graph = await emit_source_graph(
                     queue, cfg.graph_plugin, result, transcriber_config_hashes, run_id,
-                    preprocessing=preprocessing_desc,
+                    chain=preprocessing_chain,
                 )
                 logger.info(f"[src {i}] graph emission: {result.graph}")
             manifest.sources.append(result)
