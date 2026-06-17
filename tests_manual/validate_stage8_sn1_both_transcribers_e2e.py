@@ -69,12 +69,18 @@ VOXTRAL = "cjm-transcription-plugin-voxtral-hf"
 # during the Demucs migration): voxtral 261,617→261,519, fine spine 3,579→3,521;
 # the coarse count (55) + graph-node surface (166) were soxr-stable. Numbers
 # verified by a fresh no-preprocessing both-transcriber SN-I run on the current stack.
-EXPECT_SOURCE_ID = "24461366-6548-5b93-80ae-a03c463443bf"  # UUIDv5(SN-I file hash) — conserved across the migration
-EXPECT_TX_SEGMENTS = 55        # coarse pipeline segments (VAD-deterministic)
-EXPECT_GRAPH_NODES = 221       # 1 Source + 55 AudioSegment + 55 raw AudioRendition + 55 whisper-Tx + 55 voxtral-Tx; AudioRendition-era rebaseline from 166 (+55 raw renditions — the model-input moved off the boundary onto its rendition; chain=[] for a no-preprocessing run)
-EXPECT_SEGMENT_NODES = 3521    # fine spine (boundary-deterministic UUIDv5; soxr-rebaselined from 3579; rendition-keyed but count unchanged for the raw spine)
-EXPECT_VOXTRAL_CHARS = 261519  # voxtral-mini greedy decode (do_sample=False) — DETERMINISTIC; soxr-rebaselined from 261617
-WHISPER_CHARS_NOMINAL = 260368 # whisper-base — informational; varies ±tens of chars on cold re-transcribe (fallback sampling)
+# RE-REBASELINED 2026-06-17 to max_segment_duration=220 (FA over-assignment fix: 300
+# sat AT qwen3-FA's ~240-250s degeneracy cliff -> tail over-assignment/empties; 220
+# caps every FA input clear of it). Re-segmentation 55->76 coarse shifts all counts:
+# voxtral 261519->261645 (deterministic, window-boundary shift), nodes 221->305,
+# segs 3521->3522. --text-from is now VOXTRAL (the accuracy authority) — whisper-base
+# is the lightweight cross-transcriber-DIFF detector, never the spine authority.
+EXPECT_SOURCE_ID = "24461366-6548-5b93-80ae-a03c463443bf"  # UUIDv5(SN-I file hash) — conserved across re-segmentation
+EXPECT_TX_SEGMENTS = 76        # coarse pipeline segments at max_segment_duration=220 (VAD-deterministic); was 55 at 300
+EXPECT_GRAPH_NODES = 305       # 1 Source + 76 AudioSegment + 76 raw AudioRendition + 152 Transcript (76 whisper + 76 voxtral); was 221 at 300
+EXPECT_SEGMENT_NODES = 3522    # fine spine (boundary-deterministic UUIDv5); was 3521 at 300
+EXPECT_VOXTRAL_CHARS = 261645  # voxtral-mini greedy decode (do_sample=False) — DETERMINISTIC at the 220 segmentation; was 261519 at 300 (re-segmentation shifts window boundaries -> slightly different totals)
+WHISPER_CHARS_NOMINAL = 260322 # whisper-base — informational; varies ±tens of chars on cold re-transcribe (fallback sampling)
 WHISPER_CHARS_TOL = 2000       # generous band; whisper spine is the non-deterministic detector, not a pinned baseline
 
 
@@ -146,22 +152,22 @@ def main() -> None:
     w_chars = sum(len(s["transcripts"][WHISPER]["text"]) for s in segs)
     v_chars = sum(len(s["transcripts"][VOXTRAL]["text"]) for s in segs)
     g = src["graph"]
-    assert len(segs) == 55, (len(segs), 55)  # VAD coarse segments (deterministic)
-    assert v_chars == EXPECT_VOXTRAL_CHARS, (v_chars, EXPECT_VOXTRAL_CHARS)  # DETERMINISTIC: byte-identical to pre-migration
+    assert len(segs) == EXPECT_TX_SEGMENTS, (len(segs), EXPECT_TX_SEGMENTS)  # VAD coarse segments (deterministic at 220)
+    assert v_chars == EXPECT_VOXTRAL_CHARS, (v_chars, EXPECT_VOXTRAL_CHARS)  # DETERMINISTIC at the 220 segmentation
     assert abs(w_chars - WHISPER_CHARS_NOMINAL) <= WHISPER_CHARS_TOL, (w_chars, WHISPER_CHARS_NOMINAL)  # informational band
     assert g["source_node_id"] == EXPECT_SOURCE_ID, g["source_node_id"]  # conserved across the migration
     assert g["nodes_added"] == EXPECT_GRAPH_NODES, (g["nodes_added"], EXPECT_GRAPH_NODES)
     print(f"   {len(segs)} segs, whisper {w_chars} / voxtral {v_chars} chars, "
           f"Source {g['source_node_id'][:13]}…, graph {g['nodes_added']}n/{g['edges_added']}e  ✓")
 
-    # ---- 2. decomp extend (spine from whisper; graph carries both) ----
+    # ---- 2. decomp extend (spine from VOXTRAL = accuracy authority; graph carries both) ----
     print("== decomp extend ==")
     dec_journal = DECOMP / ".cjm/journal.db"
     cursor = journal_max_seq(dec_journal)
     t0 = time.monotonic()
     run([str(ENVS / "cjm-transcript-decomp-core/bin/cjm-transcript-decomp-core"),
          "run", str(TX_OUT),
-         "--text-from", WHISPER,
+         "--text-from", VOXTRAL,
          "--graph-db-path", str(SCRATCH_DB),
          "--sysmon-plugin", "cjm-system-monitor-nvidia",
          "--actor", ACTOR, "--output", str(DECOMP_OUT), "--yes"],

@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
                           "(e.g. --max-concurrent cjm-media-plugin-ffmpeg=4); same-worker "
                           "concurrency is opt-in — subprocess-backed workers parallelize, "
                           "model workers stay serial-per-instance (default: unset = 1)")
-    run.add_argument("--max-segment-duration", type=float, default=300.0, help="Wall-clock cap per segment in seconds")
+    run.add_argument("--max-segment-duration", type=float, default=220.0, help="Wall-clock cap per segment in seconds (220 keeps each forced-alignment input clear of the qwen3-FA ~240-250s degeneracy cliff; FA over-assignment investigation 2026-06-16)")
     run.add_argument("--sample-rate", type=int, default=16000, help="Model-input sample rate")
     run.add_argument("--channels", type=int, default=1, help="Model-input channel count")
     run.add_argument("--force", action="store_true", help="Bypass capability-side caches (VAD + transcription + preprocessing)")

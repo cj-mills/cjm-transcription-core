@@ -34,7 +34,7 @@ class PipelineConfig:
     preprocessing_plugin: Optional[str] = None        # Preprocessing capability instance id (None = preprocessing OFF)
     preprocessing_task: str = "source_separation"     # Task-channel task for the preprocessing step
     preprocessing_method: str = "separate_vocals"     # Task-channel method for the preprocessing step
-    max_segment_duration: float = 300.0  # Wall-clock cap per segment in seconds (pre-emptive cuts)
+    max_segment_duration: float = 220.0  # Wall-clock cap per segment in seconds (pre-emptive cuts). 220 keeps each segment's forced-alignment input clear of qwen3-FA's ~240-250s degeneracy cliff (300 sat AT the cliff -> tail over-assignment; FA over-assignment investigation 2026-06-16; 220 chosen over 240 to absorb the soft-cap silence-gap overshoot)
     sample_rate: int = 16000             # Model-input sample rate for the per-segment convert step
     channels: int = 1                    # Model-input channel count
     force: bool = False                  # Bypass capability-side caches (VAD + transcription + preprocessing)
