@@ -26,11 +26,15 @@ from cjm_plugin_system.utils.hashing import hash_file
 
 # Typed wire-kind registration (stage 2): importing the DTO classes is what
 # lets the proxy's wire_decode hand this host process TYPED results. Stage 8:
-# source_separation.result is registered too, so the preprocessing node's typed
-# output is decoded host-side and OutputRef can extract its `output_path`.
+# source_separation.result + media_processing.{artifact,segmentation,metadata}
+# are registered too, so ffmpeg's typed convert/segment_audio/get_info results
+# (and the preprocessing node's output) decode host-side for attribute access.
 from cjm_capability_primitives.vad import VADResult
 from cjm_capability_primitives.transcription import TranscriptionResult
 from cjm_capability_primitives.source_separation import SourceSeparationResult
+from cjm_capability_primitives.media_processing import (
+    MediaArtifactResult, MediaSegmentationResult, MediaMetadata,
+)
 
 from cjm_transcription_core.models import (
     PipelineConfig,
@@ -84,6 +88,7 @@ async def convert_for_vad(
     audio_path: str,          # Source audio to convert
     sample_rate: int = 16000, # Target rate (Silero supports 8k/16k)
     channels: int = 1,        # Mono
+    force: bool = False,      # Per-call cache-bypass (rides CallEnvelope.control)
 ) -> str:  # Path to the model-ready (mono, target-rate, soxr-resampled) audio
     """Convert a source to MODEL-READY audio for VAD via the ffmpeg `convert` action.
 
@@ -93,10 +98,12 @@ async def convert_for_vad(
     in seconds and apply to the ORIGINAL source for cutting."""
     result = await submit_and_wait(
         queue, ffmpeg_id,
-        action="convert", input_path=audio_path,
+        task="media_processing", method="convert", input_path=audio_path,
         output_format="wav", sample_rate=sample_rate, channels=channels,
+        control={"force": force},
     )
-    return str((result or {}).get("output_path") or "")
+    # Typed MediaArtifactResult (stage-8 wire layer): attribute access.
+    return str(getattr(result, "output_path", "") or "")
 
 async def analyze_vad(
     queue: JobQueue,
@@ -117,10 +124,10 @@ async def probe_duration(
     audio_path: str,  # Audio file to probe
 ) -> float:  # Duration in seconds (0.0 when the probe fails to report one)
     """Probe a media file's duration via the ffmpeg capability's `get_info` action."""
-    info = await submit_and_wait(queue, ffmpeg_id, action="get_info", file_path=audio_path)
-    # ffmpeg action results are plugin-side dicts (E6) — plain dict access
-    # (the multi-op tool stays untyped until its stage-8 adapter split).
-    return float((info or {}).get("duration", 0.0) or 0.0)
+    info = await submit_and_wait(queue, ffmpeg_id,
+                                 task="media_processing", method="get_info", file_path=audio_path)
+    # get_info returns a typed MediaMetadata (the uncached media_processing probe).
+    return float(getattr(info, "duration", 0.0) or 0.0)
 
 # %% ../nbs/pipeline.ipynb #b80422f1
 async def cut_segments(
@@ -128,21 +135,24 @@ async def cut_segments(
     ffmpeg_id: str,                      # ffmpeg capability instance id
     audio_path: str,                     # Source audio to cut
     boundaries: List[Dict[str, float]],  # [{start, end}, ...] from compute_segment_boundaries
-) -> Tuple[List[Dict[str, Any]], str]:  # (per-segment dicts from ffmpeg, batch_key)
+    force: bool = False,                 # Per-call cache-bypass (rides CallEnvelope.control)
+) -> Tuple[List[Any], str]:  # (typed MediaSegments from ffmpeg, batch_key)
     """Cut the source audio at the computed boundaries via ffmpeg `segment_audio`."""
     result = await submit_and_wait(
         queue, ffmpeg_id,
-        action="segment_audio", input_path=audio_path, boundaries=boundaries,
+        task="media_processing", method="segment_audio", input_path=audio_path,
+        boundaries=boundaries, control={"force": force},
     )
-    segments = list((result or {}).get("segments") or [])
-    batch_key = str((result or {}).get("batch_key") or "")
+    # Typed MediaSegmentationResult: .segments holds typed MediaSegments.
+    segments = list(getattr(result, "segments", None) or [])
+    batch_key = str(getattr(result, "batch_key", "") or "")
     if not segments:
         raise RuntimeError(f"segment_audio produced no segments for {audio_path}: {result!r}")
     return segments, batch_key
 
 # %% ../nbs/pipeline.ipynb #398ea4ef
 def build_segment_composition(
-    raw_segments: List[Dict[str, Any]],  # Per-segment dicts from ffmpeg segment_audio
+    raw_segments: List[Any],  # Typed MediaSegments from ffmpeg segment_audio
     run_id: str,           # Run id (prefixes per-segment provenance job ids)
     source_index: int,     # Position of this source within the run
     ffmpeg_id: str,        # ffmpeg capability instance id
@@ -173,12 +183,11 @@ def build_segment_composition(
     nodes: List[CompositionNode] = []
     metas: List[Dict[str, Any]] = []
     for seg in raw_segments:
-        # ffmpeg per-segment entries are plugin-side dicts (untyped until the
-        # multi-op tool's stage-8 adapter split).
-        idx = int(seg.get("index", len(metas)))
-        seg_path = str(seg.get("output_path", ""))
-        start = float(seg.get("start", 0.0))
-        end = float(seg.get("end", 0.0))
+        # Typed MediaSegment (stage-8 media_processing.segmentation): attr access.
+        idx = int(seg.index)
+        seg_path = str(seg.output_path)
+        start = float(seg.start)
+        end = float(seg.end)
 
         # Stage 8: optional preprocessing on the FULL-BAND raw segment, BEFORE the
         # model-input convert. The convert then consumes the preprocessed output
@@ -195,9 +204,9 @@ def build_segment_composition(
 
         conv = f"convert_{idx:04d}"
         nodes.append(CompositionNode(conv, ffmpeg_id, {
-            "action": "convert", "input_path": convert_input,
+            "input_path": convert_input,
             "output_format": "wav", "sample_rate": sample_rate, "channels": channels,
-        }))
+        }, task_name="media_processing", method="convert", control={"force": force}))
         transcribe_nodes: Dict[str, str] = {}
         job_ids: Dict[str, str] = {}
         for ti, transcriber_id in enumerate(transcriber_ids):
@@ -239,7 +248,8 @@ def records_from_composition(
     results = crun.results_by_node()
     records: List[SegmentRecord] = []
     for m in metas:
-        wav_path = str((results[m["convert_node"]] or {}).get("output_path") or "")
+        # Typed MediaArtifactResult (stage-8 wire layer): attribute access.
+        wav_path = str(getattr(results[m["convert_node"]], "output_path", "") or "")
         transcripts: Dict[str, Dict[str, Any]] = {}
         for transcriber_id, node_id in m["transcribe_nodes"].items():
             tr = results[node_id]
@@ -354,7 +364,8 @@ async def run_source(
     #    chunking VAD runs on the RAW (converted) source — preprocessing applies
     #    to the per-segment transcription/decomp path, not this chunking pass.
     vad_audio = await convert_for_vad(queue, cfg.ffmpeg_plugin, source_path,
-                                      sample_rate=cfg.sample_rate, channels=cfg.channels)
+                                      sample_rate=cfg.sample_rate, channels=cfg.channels,
+                                      force=cfg.force)
     chunks, duration = await analyze_vad(queue, cfg.vad_plugin, vad_audio, force=cfg.force)
     if duration <= 0:
         duration = await probe_duration(queue, cfg.ffmpeg_plugin, source_path)
@@ -377,7 +388,8 @@ async def run_source(
         return None
 
     # 4. Cut the source at the boundaries
-    raw_segments, batch_key = await cut_segments(queue, cfg.ffmpeg_plugin, source_path, boundaries)
+    raw_segments, batch_key = await cut_segments(queue, cfg.ffmpeg_plugin, source_path, boundaries,
+                                                 force=cfg.force)
 
     # 5. Per segment: [preprocess →] convert → (T× transcribe) as ONE composition
     # of N independent pipes (CR-16 ports; stage-5 dual-transcriber fan-out;

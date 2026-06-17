@@ -33,10 +33,16 @@ plugins:
     # The Plugin Package (local source)
     package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-plugin-ffmpeg/"
 
-    # Interface Libraries
+    # Interface Libraries (schema v2: substrate AUTO-INJECTED; the tool depends
+    # only on the result data nouns, not the old media domain interface lib)
     interface_libs:
-      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-plugin-system/"
-      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-plugin-system/"
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-primitives/"
+
+    # Adapter impls this worker env carries (the generic multi-method media-processing
+    # adapter; auto-binds to ffmpeg via surface match: convert/segment_audio/extract_audio/get_info)
+    adapters:
+      - lib: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-processing-adapter-interface/"
+        impl: "cjm_media_processing_adapter_interface.generic:GenericMediaProcessingAdapter"
 
   # ----------------------------------------------------------------
   # Media Analysis: Silero VAD
