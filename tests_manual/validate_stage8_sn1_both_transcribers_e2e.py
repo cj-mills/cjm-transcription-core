@@ -52,8 +52,8 @@ TX_OUT = Path("/tmp/stage8_sn1_both_transcription.json")
 DECOMP_OUT = Path("/tmp/stage8_sn1_both_decomp.json")
 CORR_OUT = Path("/tmp/stage8_sn1_both_correction.json")
 ACTOR = "stress:stage8-sn1-both"
-WHISPER = "cjm-transcription-plugin-whisper"
-VOXTRAL = "cjm-transcription-plugin-voxtral-hf"
+WHISPER = "cjm-capability-whisper"
+VOXTRAL = "cjm-capability-voxtral-hf"
 
 # DETERMINISTIC invariants (the regression gate). NOTE on empty/divergence: these
 # are intentionally NOT pinned. whisper-base is the lightweight "uncertainty
@@ -113,8 +113,8 @@ def run(argv, cwd):
 def check_discovery() -> None:
     """Milestone 1: {whisper, voxtral} compatible set, manifest-surface-based."""
     print("== discovery: {whisper, voxtral} compatible set (unloaded-safe) ==")
-    from cjm_plugin_system.core.manager import PluginManager
-    mgr = PluginManager(search_paths=[MANIFESTS])
+    from cjm_substrate.core.manager import CapabilityManager
+    mgr = CapabilityManager(search_paths=[MANIFESTS])
     mgr.discover_manifests()
     adapters = mgr.get_adapters_for_task("transcription")
     assert adapters, "no adapter discovered for task 'transcription'"
@@ -139,9 +139,9 @@ def main() -> None:
          "run", str(SN1_SRC),
          "--transcriber", WHISPER,
          "--transcriber", VOXTRAL,
-         "--graph-plugin", "cjm-graph-plugin-sqlite",
+         "--graph-plugin", "cjm-capability-graph-sqlite",
          "--graph-db-path", str(SCRATCH_DB),
-         "--sysmon-plugin", "cjm-system-monitor-nvidia",
+         "--sysmon-plugin", "cjm-capability-monitor-nvidia",
          "--actor", ACTOR, "--output", str(TX_OUT), "--yes"],
         cwd=TRANSCRIPTION)
     print(f"   wall {time.monotonic() - t0:.1f}s")
@@ -169,7 +169,7 @@ def main() -> None:
          "run", str(TX_OUT),
          "--text-from", VOXTRAL,
          "--graph-db-path", str(SCRATCH_DB),
-         "--sysmon-plugin", "cjm-system-monitor-nvidia",
+         "--sysmon-plugin", "cjm-capability-monitor-nvidia",
          "--actor", ACTOR, "--output", str(DECOMP_OUT), "--yes"],
         cwd=DECOMP)
     print(f"   wall {time.monotonic() - t0:.1f}s")

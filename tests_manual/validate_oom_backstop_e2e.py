@@ -26,18 +26,18 @@ MANIFESTS = ROOT / ".cjm" / "manifests"
 EMPIRICAL_DB = ROOT / ".cjm" / "empirical_resources.db"
 AUDIO = ROOT / "test_files" / "short_test_audio.mp3"
 MODEL = "mistralai/Voxtral-Small-24B-2507"
-PLUGIN = "cjm-transcription-plugin-voxtral-hf"
-FFMPEG = "cjm-media-plugin-ffmpeg"
-SYSMON = "cjm-system-monitor-nvidia"
+PLUGIN = "cjm-capability-voxtral-hf"
+FFMPEG = "cjm-capability-ffmpeg"
+SYSMON = "cjm-capability-monitor-nvidia"
 PHASE1_ONLY = os.environ.get("OOM_PHASE1_ONLY") == "1"
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s :: %(message)s")
 log = logging.getLogger("oom-stress")
 
-from cjm_plugin_system.core.manager import PluginManager
-from cjm_plugin_system.core.queue import JobQueue, JobStatus, JobEventType
-from cjm_plugin_system.core.ports import (
+from cjm_substrate.core.manager import CapabilityManager
+from cjm_substrate.core.queue import JobQueue, JobStatus, JobEventType
+from cjm_substrate.core.ports import (
     Composition, CompositionNode, NodeState, OutputRef,
 )
 from cjm_transcription_adapter_interface.core import TranscriptionResult  # noqa: F401 — wire-kind registration
@@ -68,7 +68,7 @@ def pipe_composition() -> Composition:
 
 
 async def main() -> None:
-    pm = PluginManager(search_paths=[MANIFESTS], sysmon_plugin_name=SYSMON)
+    pm = CapabilityManager(search_paths=[MANIFESTS], sysmon_capability_name=SYSMON)
     pm.discover_manifests()
 
     def meta(name):
@@ -77,14 +77,14 @@ async def main() -> None:
     # local_files_only: the shards are pre-downloaded; the plugin's full-repo
     # snapshot would otherwise re-pull the 48.5GB consolidated.safetensors that
     # from_pretrained never reads (sharded index load) — ledger G6 friction.
-    pm.load_plugin(meta(SYSMON))
-    pm.load_plugin(meta(FFMPEG))
-    assert pm.load_plugin(meta(PLUGIN), config={"model_id": MODEL, "device": "cuda",
+    pm.load_capability(meta(SYSMON))
+    pm.load_capability(meta(FFMPEG))
+    assert pm.load_capability(meta(PLUGIN), config={"model_id": MODEL, "device": "cuda",
                                             "local_files_only": True}), \
         f"failed to load {PLUGIN}"
     log.info(f"{PLUGIN} loaded with model_id={MODEL} device=cuda (guaranteed-OOM config)")
 
-    queue = JobQueue(deps=pm, sysmon_plugin_name=SYSMON)
+    queue = JobQueue(deps=pm, sysmon_capability_name=SYSMON)
     await queue.start()
 
     retry_events = []
@@ -164,7 +164,7 @@ async def main() -> None:
         await queue.stop()
         for name in (PLUGIN, FFMPEG, SYSMON):
             try:
-                pm.unload_plugin(name)
+                pm.unload_capability(name)
             except Exception:
                 pass
 

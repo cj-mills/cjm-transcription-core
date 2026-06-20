@@ -19,10 +19,10 @@ from typing import Any, Dict, List, Optional, Union
 @dataclass
 class PipelineConfig:
     """Configuration for one transcription pipeline run."""
-    vad_plugin: str = "cjm-media-plugin-silero-vad"               # VAD capability instance id
-    ffmpeg_plugin: str = "cjm-media-plugin-ffmpeg"                # Convert/segment capability instance id
+    vad_plugin: str = "cjm-capability-silero-vad"               # VAD capability instance id
+    ffmpeg_plugin: str = "cjm-capability-ffmpeg"                # Convert/segment capability instance id
     transcriber_plugins: List[str] = field(                       # Transcription capability instance ids (one or more; stage-5 dual-transcriber)
-        default_factory=lambda: ["cjm-transcription-plugin-whisper"])
+        default_factory=lambda: ["cjm-capability-whisper"])
     graph_plugin: Optional[str] = None   # Graph-storage capability for Source/AudioSegment/Transcript emission (None = no emission)
     graph_db_path: Optional[str] = None  # Explicit graph DB path override (caller-wins config, C8/F10)
     # Opt-in audio preprocessing (stage 8 — Demucs source separation is the first

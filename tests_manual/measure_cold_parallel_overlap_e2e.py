@@ -30,8 +30,8 @@ import sys
 import time
 from pathlib import Path
 
-from cjm_plugin_system.core.manager import PluginManager
-from cjm_plugin_system.core.queue import JobQueue
+from cjm_substrate.core.manager import CapabilityManager
+from cjm_substrate.core.queue import JobQueue
 from cjm_transcription_core.cli import load_capabilities
 from cjm_transcription_core.models import PipelineConfig
 from cjm_transcription_core.pipeline import run_pipeline
@@ -39,11 +39,11 @@ from cjm_transcription_core.pipeline import run_pipeline
 SCRATCH_DIR = Path("/tmp/stage5_closeout_scratch")
 SCRATCH_DB = str(SCRATCH_DIR / "context_graph.db")
 
-SYSMON = "cjm-system-monitor-nvidia"
-FFMPEG = "cjm-media-plugin-ffmpeg"
-VAD = "cjm-media-plugin-silero-vad"
-TRANSCRIBERS = ["cjm-transcription-plugin-whisper", "cjm-transcription-plugin-voxtral-hf"]
-GRAPH = "cjm-graph-plugin-sqlite"
+SYSMON = "cjm-capability-monitor-nvidia"
+FFMPEG = "cjm-capability-ffmpeg"
+VAD = "cjm-capability-silero-vad"
+TRANSCRIBERS = ["cjm-capability-whisper", "cjm-capability-voxtral-hf"]
+GRAPH = "cjm-capability-graph-sqlite"
 FFMPEG_CAP = 4  # the SG-33 raise under measurement
 
 
@@ -115,14 +115,14 @@ async def main():
         force=False,          # fresh sources are cold by content; no cache to bypass
         assume_yes=True,
     )
-    manager = PluginManager(search_paths=[Path(".cjm/manifests")], sysmon_plugin_name=SYSMON)
+    manager = CapabilityManager(search_paths=[Path(".cjm/manifests")], sysmon_capability_name=SYSMON)
     load_order = [SYSMON, FFMPEG, VAD] + TRANSCRIBERS + [GRAPH]
     load_capabilities(
         manager, load_order,
         configs={GRAPH: {"db_path": SCRATCH_DB}},
         max_concurrent={FFMPEG: FFMPEG_CAP},  # the --max-concurrent seam under test
     )
-    queue = JobQueue(deps=manager, sysmon_plugin_name=SYSMON)
+    queue = JobQueue(deps=manager, sysmon_capability_name=SYSMON)
     await queue.start()
     t0 = time.monotonic()
     try:
@@ -164,7 +164,7 @@ async def main():
         await queue.stop()
         for iid in reversed(load_order):
             try:
-                manager.unload_plugin(iid)
+                manager.unload_capability(iid)
             except Exception as e:
                 print(f"unload {iid} failed: {e}")
 

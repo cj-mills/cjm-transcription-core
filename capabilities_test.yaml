@@ -1,4 +1,4 @@
-plugins:
+capabilities:
   # ----------------------------------------------------------------
   # Infrastructure Worker: NVIDIA Monitor
   # GPU subtree attribution for empirical resource tracking (CR-7).
@@ -9,10 +9,10 @@ plugins:
     env_name: test-sys-mon
 
     # Environment File
-    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-system-monitor-nvidia/environment.yml"
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-monitor-nvidia/environment.yml"
 
     # The Plugin Package (local source)
-    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-system-monitor-nvidia/"
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-monitor-nvidia/"
 
     # Interface Libraries
     interface_libs:
@@ -31,10 +31,10 @@ plugins:
     env_name: test-ffmpeg
 
     # Environment File
-    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-plugin-ffmpeg/environment.yml"
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-ffmpeg/environment.yml"
 
     # The Plugin Package (local source)
-    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-plugin-ffmpeg/"
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-ffmpeg/"
 
     # Interface Libraries (schema v2: substrate AUTO-INJECTED; the tool depends
     # only on the result data nouns, not the old media domain interface lib)
@@ -55,10 +55,10 @@ plugins:
     env_name: test-silero-vad
 
     # Environment File
-    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-plugin-silero-vad/environment.yml"
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-silero-vad/environment.yml"
 
     # The Plugin Package (local source)
-    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-plugin-silero-vad/"
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-silero-vad/"
 
     # Interface Libraries (schema v2: substrate AUTO-INJECTED; the tool depends
     # only on the result data noun, not the old media domain interface lib)
@@ -82,10 +82,10 @@ plugins:
     env_name: test-demucs
 
     # Environment File
-    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-plugin-demucs/environment.yml"
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-demucs/environment.yml"
 
     # The Plugin Package (local source)
-    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-media-plugin-demucs/"
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-demucs/"
 
     # Interface Libraries (schema v2: substrate AUTO-INJECTED; the tool depends
     # only on the result data noun, not the old media domain interface lib)
@@ -107,10 +107,10 @@ plugins:
     env_name: test-whisper
 
     # Environment File (System Deps)
-    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-transcription-plugin-whisper/environment.yml"
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-whisper/environment.yml"
 
     # The Plugin Package (local source)
-    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-transcription-plugin-whisper/"
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-whisper/"
 
     # Interface Libraries (schema v2: substrate AUTO-INJECTED; the tool
     # depends only on the result data noun, not the old domain interface lib)
@@ -133,10 +133,10 @@ plugins:
     env_name: test-voxtral-hf
 
     # Environment File (System Deps)
-    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-transcription-plugin-voxtral-hf/environment.yml"
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-voxtral-hf/environment.yml"
 
     # The Plugin Package (local source)
-    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-transcription-plugin-voxtral-hf/"
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-voxtral-hf/"
 
     # Interface Libraries (schema v2: substrate AUTO-INJECTED; the tool
     # depends only on the result data noun, not the old domain interface lib)
@@ -159,10 +159,10 @@ plugins:
     env_name: test-sqlite-graph
 
     # Environment File
-    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-graph-plugin-sqlite/environment.yml"
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-graph-sqlite/environment.yml"
 
     # The Plugin Package (local source)
-    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-graph-plugin-sqlite/"
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-graph-sqlite/"
 
     # Interface Libraries (schema v2: substrate AUTO-INJECTED; the tool depends
     # only on the graph data nouns, not the dissolved graph domain interface lib)

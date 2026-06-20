@@ -11,7 +11,7 @@ __all__ = ['logger', 'build_source_emission', 'emit_source_graph']
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from cjm_plugin_system.core.queue import JobQueue
+from cjm_substrate.core.queue import JobQueue
 from cjm_context_graph_layer.grammar import spine_edges
 from cjm_context_graph_layer.ops import extend_graph
 from cjm_context_graph_layer.declare import Derivation, derivation_to_graph

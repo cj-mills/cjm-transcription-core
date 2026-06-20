@@ -15,8 +15,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from cjm_plugin_system.core.manager import PluginManager
-from cjm_plugin_system.core.queue import JobQueue
+from cjm_substrate.core.manager import CapabilityManager
+from cjm_substrate.core.queue import JobQueue
 
 from .models import PipelineConfig
 from .pipeline import run_pipeline
@@ -37,11 +37,11 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     run.add_argument("--manifests-dir", default=".cjm/manifests", help="Capability manifests directory")
     run.add_argument("--transcriber", action="append", default=None,
                      help="Transcription capability name; REPEATABLE for the dual-transcriber "
-                          "(lightweight + accuracy) comparison run (default: cjm-transcription-plugin-whisper)")
-    run.add_argument("--vad-plugin", default="cjm-media-plugin-silero-vad", help="VAD capability name")
-    run.add_argument("--ffmpeg-plugin", default="cjm-media-plugin-ffmpeg", help="Convert/segment capability name")
+                          "(lightweight + accuracy) comparison run (default: cjm-capability-whisper)")
+    run.add_argument("--vad-plugin", default="cjm-capability-silero-vad", help="VAD capability name")
+    run.add_argument("--ffmpeg-plugin", default="cjm-capability-ffmpeg", help="Convert/segment capability name")
     run.add_argument("--preprocessing-plugin", default=None,
-                     help="Opt-in audio-preprocessing capability (e.g. cjm-media-plugin-demucs for vocals "
+                     help="Opt-in audio-preprocessing capability (e.g. cjm-capability-demucs for vocals "
                           "isolation); runs per-segment on FULL-BAND audio BEFORE the model-input convert, "
                           "via the source_separation task channel (default: no preprocessing)")
     run.add_argument("--graph-plugin", default=None,
@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     run.add_argument("--sysmon-plugin", default=None, help="MonitorPlugin capability for GPU subtree attribution (CR-7); loaded first; default: no monitor")
     run.add_argument("--max-concurrent", action="append", default=None, metavar="NAME=N",
                      help="Per-capability SG-33 max_concurrent_requests override, REPEATABLE "
-                          "(e.g. --max-concurrent cjm-media-plugin-ffmpeg=4); same-worker "
+                          "(e.g. --max-concurrent cjm-capability-ffmpeg=4); same-worker "
                           "concurrency is opt-in — subprocess-backed workers parallelize, "
                           "model workers stay serial-per-instance (default: unset = 1)")
     run.add_argument("--max-segment-duration", type=float, default=220.0, help="Wall-clock cap per segment in seconds (220 keeps each forced-alignment input clear of the qwen3-FA ~240-250s degeneracy cliff; FA over-assignment investigation 2026-06-16)")
@@ -87,7 +87,7 @@ def parse_max_concurrent(
 
 # %% ../nbs/cli.ipynb #f0de5ec6
 def load_capabilities(
-    manager: PluginManager,   # Freshly constructed manager
+    manager: CapabilityManager,   # Freshly constructed manager
     instance_ids: List[str],  # Capability names to load (default instances)
     configs: Optional[Dict[str, Dict[str, Any]]] = None,  # Per-capability config overrides (caller-wins, C8)
     max_concurrent: Optional[Dict[str, int]] = None,  # Per-capability SG-33 max_concurrent_requests (unset = queue default of 1)
@@ -102,7 +102,7 @@ def load_capabilities(
                 f"capability {iid!r} not found in manifests "
                 f"(discovered: {sorted(discovered)}) — run cjm-ctl install-all first"
             )
-        if not manager.load_plugin(meta, config=(configs or {}).get(iid),
+        if not manager.load_capability(meta, config=(configs or {}).get(iid),
                                    max_concurrent_requests=(max_concurrent or {}).get(iid)):
             raise SystemExit(f"failed to load capability {iid!r}")
         logger.info(f"loaded {iid}")
@@ -112,7 +112,7 @@ async def run_command(
     args: argparse.Namespace,  # Parsed CLI arguments for the `run` subcommand
 ) -> int:  # Process exit code (0 = all sources completed)
     """Execute the `run` subcommand: full pipeline over the given audio files."""
-    transcribers = list(args.transcriber or ["cjm-transcription-plugin-whisper"])
+    transcribers = list(args.transcriber or ["cjm-capability-whisper"])
     cfg = PipelineConfig(
         vad_plugin=args.vad_plugin,
         ffmpeg_plugin=args.ffmpeg_plugin,
@@ -138,9 +138,9 @@ async def run_command(
     # name into BOTH the manager (load-time empirical records) and the queue
     # (per-job resource samples); the monitor loads FIRST so GPU capabilities'
     # samples record gpu_memory_mb_peak (voxtral-vllm e2e pattern).
-    manager = PluginManager(
+    manager = CapabilityManager(
         search_paths=[Path(args.manifests_dir)],
-        sysmon_plugin_name=args.sysmon_plugin,
+        sysmon_capability_name=args.sysmon_plugin,
     )
     # Preprocessing (opt-in) loads alongside the other compute capabilities; its
     # adapter auto-binds by surface match exactly like VAD/transcription.
@@ -154,7 +154,7 @@ async def run_command(
                if (cfg.graph_plugin and args.graph_db_path) else None)
     load_capabilities(manager, load_order, configs=configs, max_concurrent=max_concurrent)
 
-    queue = JobQueue(deps=manager, sysmon_plugin_name=args.sysmon_plugin)
+    queue = JobQueue(deps=manager, sysmon_capability_name=args.sysmon_plugin)
     await queue.start()
     try:
         # CR-14 follow-up: actor attribution (operator identity by default;
@@ -165,7 +165,7 @@ async def run_command(
         await queue.stop()
         for iid in reversed(load_order):  # Reverse load order; the monitor unloads last
             try:
-                manager.unload_plugin(iid)
+                manager.unload_capability(iid)
             except Exception as e:  # Best-effort teardown; never mask the run's outcome
                 logger.warning(f"unload {iid} failed: {e}")
 

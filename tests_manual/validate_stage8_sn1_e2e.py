@@ -61,7 +61,7 @@ TX_OUT = Path("/tmp/stage8_sn1_e2e_transcription.json")
 DECOMP_OUT = Path("/tmp/stage8_sn1_e2e_decomp.json")
 CORR_OUT = Path("/tmp/stage8_sn1_e2e_correction.json")
 ACTOR = "stress:stage8-sn1"
-WHISPER = "cjm-transcription-plugin-whisper"
+WHISPER = "cjm-capability-whisper"
 
 # Stage-8 whisper-only baselines (SN-I) at max_segment_duration=220 (FA over-assignment
 # fix; rebaselined 2026-06-17 from the pre-soxr/pre-AudioRendition 300s values). Structural
@@ -116,9 +116,9 @@ def main() -> None:
     run([str(ENVS / "cjm-transcription-core/bin/cjm-transcription-core"),
          "run", str(SN1_SRC),
          "--transcriber", WHISPER,
-         "--graph-plugin", "cjm-graph-plugin-sqlite",
+         "--graph-plugin", "cjm-capability-graph-sqlite",
          "--graph-db-path", str(SCRATCH_DB),
-         "--sysmon-plugin", "cjm-system-monitor-nvidia",
+         "--sysmon-plugin", "cjm-capability-monitor-nvidia",
          "--actor", ACTOR, "--output", str(TX_OUT), "--yes"],
         cwd=TRANSCRIPTION)
     print(f"   wall {time.monotonic() - t0:.1f}s")
@@ -156,7 +156,7 @@ def main() -> None:
          "run", str(TX_OUT),
          "--text-from", WHISPER,
          "--graph-db-path", str(SCRATCH_DB),
-         "--sysmon-plugin", "cjm-system-monitor-nvidia",
+         "--sysmon-plugin", "cjm-capability-monitor-nvidia",
          "--actor", ACTOR, "--output", str(DECOMP_OUT), "--yes"],
         cwd=DECOMP)
     print(f"   wall {time.monotonic() - t0:.1f}s")

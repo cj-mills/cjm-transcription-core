@@ -132,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
 
 ``` python
 def load_capabilities(
-    manager: PluginManager,   # Freshly constructed manager
+    manager: CapabilityManager,   # Freshly constructed manager
     instance_ids: List[str],  # Capability names to load (default instances)
 ) -> None
     "Discover manifests + load each requested capability (default instance)."
@@ -183,9 +183,9 @@ def new_run_id() -> str:  # e.g. "run_20260607_153000_1a2b3c4d"
 class PipelineConfig:
     "Configuration for one transcription pipeline run."
     
-    vad_plugin: str = 'cjm-media-plugin-silero-vad'  # VAD capability instance id
-    ffmpeg_plugin: str = 'cjm-media-plugin-ffmpeg'  # Convert/segment capability instance id
-    transcriber_plugin: str = 'cjm-transcription-plugin-whisper'  # Transcription capability instance id
+    vad_plugin: str = 'cjm-capability-silero-vad'  # VAD capability instance id
+    ffmpeg_plugin: str = 'cjm-capability-ffmpeg'  # Convert/segment capability instance id
+    transcriber_plugin: str = 'cjm-capability-whisper'  # Transcription capability instance id
     max_segment_duration: float = 300.0  # Wall-clock cap per segment in seconds (pre-emptive cuts)
     sample_rate: int = 16000  # Model-input sample rate for the per-segment convert step
     channels: int = 1  # Model-input channel count
@@ -427,7 +427,7 @@ async def run_source(
 
 ``` python
 def collect_plugin_info(
-    manager: PluginManager,   # Manager holding the loaded capabilities
+    manager: CapabilityManager,   # Manager holding the loaded capabilities
     instance_ids: List[str],  # Instance ids to record
 ) -> Dict[str, Dict[str, Any]]:  # instance_id -> {name, version, db_path}
     "Record capability identity + data-DB pointers for the run manifest (provenance)."
@@ -435,7 +435,7 @@ def collect_plugin_info(
 
 ``` python
 async def run_pipeline(
-    manager: PluginManager,  # Manager with the three capabilities loaded
+    manager: CapabilityManager,  # Manager with the three capabilities loaded
     queue: JobQueue,         # Started job queue
     cfg: PipelineConfig,     # Run configuration
     sources: List[str],      # Source audio paths, in order
