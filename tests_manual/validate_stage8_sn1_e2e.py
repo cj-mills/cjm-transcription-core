@@ -54,7 +54,7 @@ TRANSCRIPTION = BASE / "cjm-transcription-core"
 DECOMP = BASE / "cjm-transcript-decomp-core"
 CORRECTION = BASE / "cjm-transcript-correction-core"
 ENVS = Path.home() / "miniforge3/envs"
-SN1_SRC = BASE / "cjm-transcription-audio-segment/test_files/2018-07-14_show-62-supernova-in-the-east-i.mp3"
+SN1_SRC = Path("/mnt/SN850X_8TB/Media_Library/Podcasts/Hardcore_History/Dan Carlin Hardcore History Archives/2018-07-14_Show 62 - Supernova in the East I.mp3")  # canonical media-library copy (hash-identical to the deferred audio-segment copy → Source id conserved)
 
 SCRATCH_DB = Path("/tmp/stage8_sn1_scratch_graph.db")
 TX_OUT = Path("/tmp/stage8_sn1_e2e_transcription.json")

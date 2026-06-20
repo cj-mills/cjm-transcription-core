@@ -454,7 +454,7 @@ def collect_plugin_info(
     """
     info: Dict[str, Dict[str, Any]] = {}
     for iid in instance_ids:
-        meta = (getattr(manager, "plugins", {}) or {}).get(iid)
+        meta = (getattr(manager, "capabilities", {}) or {}).get(iid)
         if meta is None:
             continue
         manifest = getattr(meta, "manifest", {}) or {}
