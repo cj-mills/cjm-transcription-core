@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.9.38">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+<meta name="description" content="The headless transcription pipeline: VAD analysis → boundary computation → segment cutting → per-segment model-input conversion → transcription, composed over capability workers via the substrate’s JobQueue.">
+
+<title>pipeline – cjm-transcription-core</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="site_libs/quarto-nav/headroom.min.js"></script>
+<script src="site_libs/clipboard/clipboard.min.js"></script>
+<script src="site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="site_libs/quarto-search/fuse.min.js"></script>
+<script src="site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="./">
+<script src="site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="site_libs/quarto-html/popper.min.js"></script>
+<script src="site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="site_libs/quarto-html/anchor.min.js"></script>
+<link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-15634bcf2e68342d4ad2dfa704d543f6.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="site_libs/bootstrap/bootstrap-3d242d70d41cd9edc5ebe4da1d712dc5.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+
+
+<link rel="stylesheet" href="styles.css">
+<meta property="og:title" content="pipeline – cjm-transcription-core">
+<meta property="og:description" content="The headless transcription pipeline: VAD analysis → boundary computation → segment cutting → per-segment model-input conversion → transcription, composed over capability workers via the substrate’s JobQueue.">
+<meta property="og:site_name" content="cjm-transcription-core">
+<meta name="twitter:title" content="pipeline – cjm-transcription-core">
+<meta name="twitter:description" content="The headless transcription pipeline: VAD analysis → boundary computation → segment cutting → per-segment model-input conversion → transcription, composed over capability workers via the substrate’s JobQueue.">
+<meta name="twitter:card" content="summary">
+</head>
+
+<body class="nav-sidebar floating nav-fixed quarto-light">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="./index.html">
+    <span class="navbar-title">cjm-transcription-core</span>
+    </a>
+  </div>
+        <div class="quarto-navbar-tools tools-end">
+</div>
+          <div id="quarto-search" class="" title="Search"></div>
+      </div> <!-- /container-fluid -->
+    </nav>
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="./pipeline.html">pipeline</a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">cjm-transcription-core</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./boundaries.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">boundaries</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./cli.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">cli</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./emission.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">emission</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./models.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">models</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./pipeline.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text">pipeline</span></a>
+  </div>
+</li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#submit_and_wait" id="toc-submit_and_wait" class="nav-link active" data-scroll-target="#submit_and_wait">submit_and_wait</a></li>
+  <li><a href="#normalize_vad_result" id="toc-normalize_vad_result" class="nav-link" data-scroll-target="#normalize_vad_result">normalize_vad_result</a></li>
+  <li><a href="#analyze_vad" id="toc-analyze_vad" class="nav-link" data-scroll-target="#analyze_vad">analyze_vad</a></li>
+  <li><a href="#convert_for_vad" id="toc-convert_for_vad" class="nav-link" data-scroll-target="#convert_for_vad">convert_for_vad</a></li>
+  <li><a href="#probe_duration" id="toc-probe_duration" class="nav-link" data-scroll-target="#probe_duration">probe_duration</a></li>
+  <li><a href="#cut_segments" id="toc-cut_segments" class="nav-link" data-scroll-target="#cut_segments">cut_segments</a></li>
+  <li><a href="#build_segment_composition" id="toc-build_segment_composition" class="nav-link" data-scroll-target="#build_segment_composition">build_segment_composition</a></li>
+  <li><a href="#records_from_composition" id="toc-records_from_composition" class="nav-link" data-scroll-target="#records_from_composition">records_from_composition</a></li>
+  <li><a href="#tier1_segment_checks" id="toc-tier1_segment_checks" class="nav-link" data-scroll-target="#tier1_segment_checks">tier1_segment_checks</a></li>
+  <li><a href="#tier1_transcript_checks" id="toc-tier1_transcript_checks" class="nav-link" data-scroll-target="#tier1_transcript_checks">tier1_transcript_checks</a></li>
+  <li><a href="#confirm_seam" id="toc-confirm_seam" class="nav-link" data-scroll-target="#confirm_seam">confirm_seam</a></li>
+  <li><a href="#run_source" id="toc-run_source" class="nav-link" data-scroll-target="#run_source">run_source</a></li>
+  <li><a href="#collect_capability_info" id="toc-collect_capability_info" class="nav-link" data-scroll-target="#collect_capability_info">collect_capability_info</a></li>
+  <li><a href="#run_pipeline" id="toc-run_pipeline" class="nav-link" data-scroll-target="#run_pipeline">run_pipeline</a></li>
+  </ul>
+<div class="toc-actions"><ul><li><a href="https://github.com/cj-mills/cjm-transcription-core/issues/new" class="toc-action"><i class="bi bi-github"></i>Report an issue</a></li></ul></div><div class="quarto-alternate-formats"><h2>Other Formats</h2><ul><li><a href="pipeline.html.md"><i class="bi bi-file-code"></i>CommonMark</a></li></ul></div></nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title">pipeline</h1>
+</div>
+
+<div>
+  <div class="description">
+    The headless transcription pipeline: VAD analysis → boundary computation → segment cutting → per-segment model-input conversion → transcription, composed over capability workers via the substrate’s <code>JobQueue</code>.
+  </div>
+</div>
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<!-- WARNING: THIS FILE WAS AUTOGENERATED! DO NOT EDIT! -->
+<hr>
+<section id="submit_and_wait" class="level3">
+<h3 class="anchored" data-anchor-id="submit_and_wait">submit_and_wait</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="cf">async</span> <span class="kw">def</span> submit_and_wait(</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    queue:JobQueue, <span class="co"># Started job queue</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    instance_id:<span class="bu">str</span>, <span class="co"># Capability instance to invoke</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    timeout:Optional<span class="op">=</span><span class="va">None</span>, <span class="co"># Seconds to wait; None = no limit</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    kwargs:VAR_KEYWORD</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span>Any: <span class="co"># The completed job's result payload</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Submit one capability job, wait for it, and return its result (raise on failure).</em></p>
+<hr>
+</section>
+<section id="normalize_vad_result" class="level3">
+<h3 class="anchored" data-anchor-id="normalize_vad_result">normalize_vad_result</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> normalize_vad_result(</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    result:VADResult, <span class="co"># Typed VAD result (wire-decoded at the proxy)</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span>Tuple: <span class="co"># (sorted speech chunks [{start, end}], reported duration)</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Normalize a typed VAD result into sorted speech chunks + the reported duration.</em></p>
+<p>Stage 8 (Option C): the result arrives as a <code>VADResult</code> with typed <code>TimeRange</code> ranges — the dict-or-object tolerance (<code>field_of</code>, evidence E5) and the start/start_time key-variance handling retired with the untyped wire. Duration comes from the result metadata; returns 0.0 when the capability did not report one (callers fall back to an ffmpeg probe).</p>
+<hr>
+</section>
+<section id="analyze_vad" class="level3">
+<h3 class="anchored" data-anchor-id="analyze_vad">analyze_vad</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="cf">async</span> <span class="kw">def</span> analyze_vad(</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    queue:JobQueue, vad_id:<span class="bu">str</span>, <span class="co"># VAD capability instance id</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    audio_path:<span class="bu">str</span>, <span class="co"># MODEL-READY audio file to analyze (converted upstream)</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    force:<span class="bu">bool</span><span class="op">=</span><span class="va">False</span>, <span class="co"># Bypass the VAD capability's cache (rides CallEnvelope.control)</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span>Tuple: <span class="co"># (speech chunks, reported duration)</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Run VAD analysis on one model-ready audio file (task channel: vad/detect_speech).</em></p>
+<hr>
+</section>
+<section id="convert_for_vad" class="level3">
+<h3 class="anchored" data-anchor-id="convert_for_vad">convert_for_vad</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="cf">async</span> <span class="kw">def</span> convert_for_vad(</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    queue:JobQueue, ffmpeg_id:<span class="bu">str</span>, <span class="co"># ffmpeg capability instance id</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    audio_path:<span class="bu">str</span>, <span class="co"># Source audio to convert</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    sample_rate:<span class="bu">int</span><span class="op">=</span><span class="dv">16000</span>, <span class="co"># Target rate (Silero supports 8k/16k)</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    channels:<span class="bu">int</span><span class="op">=</span><span class="dv">1</span>, <span class="co"># Mono</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    force:<span class="bu">bool</span><span class="op">=</span><span class="va">False</span>, <span class="co"># Per-call cache-bypass (rides CallEnvelope.control)</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span><span class="bu">str</span>: <span class="co"># Path to the model-ready (mono, target-rate, soxr-resampled) audio</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Convert a source to MODEL-READY audio for VAD via the ffmpeg <code>convert</code> action.</em></p>
+<p>Stage 8 (Option C): VAD operates on model-ready audio — the in-tool librosa decode/resample retired, so the whole source is converted once here (ffmpeg, soxr resampler) and the returned path feeds analyze_vad. Boundaries come back in seconds and apply to the ORIGINAL source for cutting.</p>
+<hr>
+</section>
+<section id="probe_duration" class="level3">
+<h3 class="anchored" data-anchor-id="probe_duration">probe_duration</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="cf">async</span> <span class="kw">def</span> probe_duration(</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    queue:JobQueue, ffmpeg_id:<span class="bu">str</span>, <span class="co"># ffmpeg capability instance id</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    audio_path:<span class="bu">str</span>, <span class="co"># Audio file to probe</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span><span class="bu">float</span>: <span class="co"># Duration in seconds (0.0 when the probe fails to report one)</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Probe a media file’s duration via the ffmpeg capability’s <code>get_info</code> action.</em></p>
+<hr>
+</section>
+<section id="cut_segments" class="level3">
+<h3 class="anchored" data-anchor-id="cut_segments">cut_segments</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="cf">async</span> <span class="kw">def</span> cut_segments(</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>    queue:JobQueue, ffmpeg_id:<span class="bu">str</span>, <span class="co"># ffmpeg capability instance id</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>    audio_path:<span class="bu">str</span>, <span class="co"># Source audio to cut</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>    boundaries:List, <span class="co"># [{start, end}, ...] from compute_segment_boundaries</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>    force:<span class="bu">bool</span><span class="op">=</span><span class="va">False</span>, <span class="co"># Per-call cache-bypass (rides CallEnvelope.control)</span></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span>Tuple: <span class="co"># (typed MediaSegments from ffmpeg, batch_key)</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Cut the source audio at the computed boundaries via ffmpeg <code>segment_audio</code>.</em></p>
+<hr>
+</section>
+<section id="build_segment_composition" class="level3">
+<h3 class="anchored" data-anchor-id="build_segment_composition">build_segment_composition</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> build_segment_composition(</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    raw_segments:List, <span class="co"># Typed MediaSegments from ffmpeg segment_audio</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>    run_id:<span class="bu">str</span>, <span class="co"># Run id (prefixes per-segment provenance job ids)</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>    source_index:<span class="bu">int</span>, <span class="co"># Position of this source within the run</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>    ffmpeg_id:<span class="bu">str</span>, <span class="co"># ffmpeg capability instance id</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>    transcriber_ids:List, <span class="co"># Transcription capability instance ids (one or more)</span></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>    sample_rate:<span class="bu">int</span><span class="op">=</span><span class="dv">16000</span>, <span class="co"># Model-input sample rate</span></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>    channels:<span class="bu">int</span><span class="op">=</span><span class="dv">1</span>, <span class="co"># Model-input channel count</span></span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a>    force:<span class="bu">bool</span><span class="op">=</span><span class="va">False</span>, <span class="co"># Per-call cache-bypass control flag</span></span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a>    preprocessing_capability:Optional<span class="op">=</span><span class="va">None</span>, <span class="co"># Opt-in audio-preprocessing capability (None = off)</span></span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a>    preprocessing_task:<span class="bu">str</span><span class="op">=</span><span class="st">'source_separation'</span>, <span class="co"># Task-channel task for the preprocessing step</span></span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a>    preprocessing_method:<span class="bu">str</span><span class="op">=</span><span class="st">'separate_vocals'</span>, <span class="co"># Task-channel method for the preprocessing step</span></span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span>Tuple: <span class="co"># (composition, per-segment meta rows)</span></span>
+<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Build the per-source fan-out composition: N independent [preprocess→]convert→(T× transcribe) pipes.</em></p>
+<p>Host-constructed fan-out (stage-3 ratified shape): the host computes every per-item kwarg statically; the only execution-time unknowns — the hashed output paths of the preprocessing + convert steps — flow through <code>OutputRef</code> bindings. Stage 5 (dual-transcriber = the named parallel-port adopter): each segment’s convert output fans out to ONE transcribe node PER TRANSCRIBER.</p>
+<p>Stage 8 (opt-in preprocessing): when <code>preprocessing_capability</code> is set, a preprocessing node (e.g.&nbsp;Demucs vocals isolation) runs FIRST on the FULL-BAND raw segment, and the model-input convert consumes ITS output (vocals → convert → transcribe). The convert output — recorded as <code>model_input_path</code> — is therefore the vocals-isolated model-ready WAV, which decomp’s VAD+FA inherit for free. Routed through the task channel by (preprocessing_task, preprocessing_method) so the slot is FAMILY-AGNOSTIC.</p>
+<hr>
+</section>
+<section id="records_from_composition" class="level3">
+<h3 class="anchored" data-anchor-id="records_from_composition">records_from_composition</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> records_from_composition(</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    crun:CompositionRun, <span class="co"># Terminal composition run</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>    metas:List, <span class="co"># Meta rows from build_segment_composition</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span>List: <span class="co"># Ordered per-segment records</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Fold a completed segment composition back into SegmentRecords.</em></p>
+<p>Raises on a non-completed run, surfacing the failed nodes’ structured errors — under fail_fast a single segment failure stops the source, matching the pre-ports loop where the first raise aborted the source. Stage 5: each record carries per-transcriber <code>transcripts</code> (symmetric variants; authority is the decomp consumer’s choice).</p>
+<hr>
+</section>
+<section id="tier1_segment_checks" class="level3">
+<h3 class="anchored" data-anchor-id="tier1_segment_checks">tier1_segment_checks</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> tier1_segment_checks(</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>    boundaries:List, <span class="co"># Computed segment boundaries</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>    max_segment_duration:<span class="bu">float</span>, <span class="co"># The configured wall-clock cap</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>    chunk_count:<span class="bu">int</span>, <span class="co"># VAD speech-chunk count</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span>List: <span class="co"># Human-readable warnings (empty = all clear)</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Tier-1 deterministic pre-filters for the boundary-review seam (no AI).</em></p>
+<hr>
+</section>
+<section id="tier1_transcript_checks" class="level3">
+<h3 class="anchored" data-anchor-id="tier1_transcript_checks">tier1_transcript_checks</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> tier1_transcript_checks(</span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>    segments:List, <span class="co"># Transcribed segments for one source</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span>List: <span class="co"># Human-readable warnings (empty = all clear)</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Tier-1 deterministic pre-filters for the transcript-review seam (no AI).</em></p>
+<hr>
+</section>
+<section id="confirm_seam" class="level3">
+<h3 class="anchored" data-anchor-id="confirm_seam">confirm_seam</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> confirm_seam(</span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>    seam:<span class="bu">str</span>, <span class="co"># Seam label, e.g. "boundary-review"</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>    summary_lines:List, <span class="co"># What the operator is being asked to accept</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>    warnings:List, <span class="co"># Tier-1 warnings (logged prominently)</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>    assume_yes:<span class="bu">bool</span><span class="op">=</span><span class="va">False</span>, <span class="co"># Headless mode: accept without prompting</span></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span><span class="bu">bool</span>: <span class="co"># True = proceed, False = operator aborted</span></span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>HITL approval seam in its cheapest viable form (log + optional CLI prompt).</em></p>
+<p>Per-seam capability annotation (HITL-assist methodology, 5 fields): 1. signal: per-source summaries + Tier-1 warnings 2. deterministic pre-filter: the tier1_* check functions (no AI) 3. modality-bridge candidate: spectrogram render for boundary sanity (future Tier 2) 4. authoritative verifier: re-transcribe-and-compare via a second capability (future Tier 3) 5. flywheel capture: accept/abort decisions are logged; durable capture is a pass-2 seam-contract concern, not solved here</p>
+<p>NOTE: input() blocks the event loop — acceptable because seams sit between stages with no jobs in flight; the pass-2 seam contract needs an async shape.</p>
+<hr>
+</section>
+<section id="run_source" class="level3">
+<h3 class="anchored" data-anchor-id="run_source">run_source</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="cf">async</span> <span class="kw">def</span> run_source(</span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>    queue:JobQueue, cfg:PipelineConfig, <span class="co"># Run configuration</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>    source_path:<span class="bu">str</span>, <span class="co"># Source audio file</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>    run_id:<span class="bu">str</span>, <span class="co"># Run id (prefixes per-segment job ids)</span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>    source_index:<span class="bu">int</span>, <span class="co"># Position of this source within the run</span></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span>Optional: <span class="co"># None when the operator aborts at a seam</span></span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Run the full pipeline for one source: VAD → boundaries → cut → [preprocess →] convert → transcribe.</em></p>
+<hr>
+</section>
+<section id="collect_capability_info" class="level3">
+<h3 class="anchored" data-anchor-id="collect_capability_info">collect_capability_info</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> collect_capability_info(</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    manager:CapabilityManager, <span class="co"># Manager holding the loaded capabilities</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>    instance_ids:List, <span class="co"># Instance ids to record</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span>Dict: <span class="co"># instance_id -&gt; {name, version, db_path, config_hash}</span></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Record capability identity + data-DB pointers for the run manifest (provenance).</em></p>
+<p>Stage 5: also records each capability’s EFFECTIVE config hash (the same <code>compute_config_hash</code> the empirical store keys on) — Transcript node identity is (audio segment, transcriber, config_hash), so the manifest must carry the hash for downstream id recomputation. <code>db_path</code> prefers the effective config over the manifest default (the D19 lesson). Stage 6 (0.2.1): the EFFECTIVE config dict is recorded READABLY beside its hash – the I8 lesson (a persisted stress config was only diagnosable by hash archaeology; bundle recipients should read model identity directly).</p>
+<hr>
+</section>
+<section id="run_pipeline" class="level3">
+<h3 class="anchored" data-anchor-id="run_pipeline">run_pipeline</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb14"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="cf">async</span> <span class="kw">def</span> run_pipeline(</span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>    manager:CapabilityManager, <span class="co"># Manager with the capabilities loaded</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>    queue:JobQueue, <span class="co"># Started job queue</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    cfg:PipelineConfig, <span class="co"># Run configuration</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>    sources:List, <span class="co"># Source audio paths, in order</span></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a>    run_id:Optional<span class="op">=</span><span class="va">None</span>, <span class="co"># Override run id (default: generated)</span></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a>    actor:Optional<span class="op">=</span><span class="va">None</span>, <span class="co"># Who/what initiated (journal attribution; CLI default cli:&lt;user&gt;)</span></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a>)<span class="op">-&gt;</span>RunManifest: <span class="co"># Manifest of everything the run produced</span></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><em>Run the transcription pipeline over the given sources, in order.</em></p>
+<p>An operator abort at any seam stops the run; the manifest holds the sources completed so far (capability-side caches make re-runs cheap). With <code>cfg.graph_capability</code> set, each completed source EMITS the graph root (Source → AudioSegment → AudioRendition → Transcript; CR-18 revolution 2) idempotently — re-runs verify-collide instead of duplicating.</p>
+<div id="1d7b0819" class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb15"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Pure-logic smoke checks (no capabilities involved)</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> cjm_capability_primitives.vad <span class="im">import</span> VADResult, TimeRange</span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="co"># normalize_vad_result consumes the TYPED result (stage-8 VADResult);</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a><span class="co"># ordering still normalizes, duration still reads from metadata.</span></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>chunks, dur <span class="op">=</span> normalize_vad_result(VADResult(</span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>    ranges<span class="op">=</span>[TimeRange(start<span class="op">=</span><span class="fl">5.0</span>, end<span class="op">=</span><span class="fl">9.0</span>), TimeRange(start<span class="op">=</span><span class="fl">0.5</span>, end<span class="op">=</span><span class="fl">2.0</span>)],</span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>    metadata<span class="op">=</span>{<span class="st">"duration"</span>: <span class="fl">28.0</span>},</span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a>))</span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> chunks <span class="op">==</span> [{<span class="st">"start"</span>: <span class="fl">0.5</span>, <span class="st">"end"</span>: <span class="fl">2.0</span>}, {<span class="st">"start"</span>: <span class="fl">5.0</span>, <span class="st">"end"</span>: <span class="fl">9.0</span>}], chunks</span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> dur <span class="op">==</span> <span class="fl">28.0</span></span>
+<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-13"><a href="#cb15-13" aria-hidden="true" tabindex="-1"></a><span class="co"># tier-1 checks fire on the right shapes (0.2.0 per-transcriber transcripts)</span></span>
+<span id="cb15-14"><a href="#cb15-14" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> tier1_segment_checks([], <span class="fl">300.0</span>, <span class="dv">0</span>) <span class="op">!=</span> []</span>
+<span id="cb15-15"><a href="#cb15-15" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> tier1_segment_checks([{<span class="st">"start"</span>: <span class="fl">0.0</span>, <span class="st">"end"</span>: <span class="fl">28.0</span>}], <span class="fl">300.0</span>, <span class="dv">3</span>) <span class="op">==</span> []</span>
+<span id="cb15-16"><a href="#cb15-16" aria-hidden="true" tabindex="-1"></a>_empty <span class="op">=</span> SegmentRecord(<span class="dv">0</span>, <span class="fl">0.0</span>, <span class="fl">40.0</span>, <span class="fl">40.0</span>, <span class="st">"a"</span>, <span class="st">"b"</span>,</span>
+<span id="cb15-17"><a href="#cb15-17" aria-hidden="true" tabindex="-1"></a>                       transcripts<span class="op">=</span>{<span class="st">"whisper"</span>: {<span class="st">"job_id"</span>: <span class="st">"j"</span>, <span class="st">"text"</span>: <span class="st">""</span>, <span class="st">"metadata"</span>: {}}})</span>
+<span id="cb15-18"><a href="#cb15-18" aria-hidden="true" tabindex="-1"></a>_ok <span class="op">=</span> SegmentRecord(<span class="dv">0</span>, <span class="fl">0.0</span>, <span class="fl">28.0</span>, <span class="fl">28.0</span>, <span class="st">"a"</span>, <span class="st">"b"</span>,</span>
+<span id="cb15-19"><a href="#cb15-19" aria-hidden="true" tabindex="-1"></a>                    transcripts<span class="op">=</span>{<span class="st">"whisper"</span>: {<span class="st">"job_id"</span>: <span class="st">"j"</span>, <span class="st">"text"</span>: <span class="st">"plenty of text here"</span>, <span class="st">"metadata"</span>: {}}})</span>
+<span id="cb15-20"><a href="#cb15-20" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> tier1_transcript_checks([_empty]) <span class="op">!=</span> []</span>
+<span id="cb15-21"><a href="#cb15-21" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> tier1_transcript_checks([_ok]) <span class="op">==</span> []</span>
+<span id="cb15-22"><a href="#cb15-22" aria-hidden="true" tabindex="-1"></a><span class="co"># per-transcriber warnings name the transcriber</span></span>
+<span id="cb15-23"><a href="#cb15-23" aria-hidden="true" tabindex="-1"></a>_dual <span class="op">=</span> SegmentRecord(<span class="dv">0</span>, <span class="fl">0.0</span>, <span class="fl">40.0</span>, <span class="fl">40.0</span>, <span class="st">"a"</span>, <span class="st">"b"</span>, transcripts<span class="op">=</span>{</span>
+<span id="cb15-24"><a href="#cb15-24" aria-hidden="true" tabindex="-1"></a>    <span class="st">"whisper"</span>: {<span class="st">"job_id"</span>: <span class="st">"j1"</span>, <span class="st">"text"</span>: <span class="st">"plenty of text here too"</span>, <span class="st">"metadata"</span>: {}},</span>
+<span id="cb15-25"><a href="#cb15-25" aria-hidden="true" tabindex="-1"></a>    <span class="st">"voxtral"</span>: {<span class="st">"job_id"</span>: <span class="st">"j2"</span>, <span class="st">"text"</span>: <span class="st">""</span>, <span class="st">"metadata"</span>: {}},</span>
+<span id="cb15-26"><a href="#cb15-26" aria-hidden="true" tabindex="-1"></a>})</span>
+<span id="cb15-27"><a href="#cb15-27" aria-hidden="true" tabindex="-1"></a>ws <span class="op">=</span> tier1_transcript_checks([_dual])</span>
+<span id="cb15-28"><a href="#cb15-28" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> <span class="bu">len</span>(ws) <span class="op">==</span> <span class="dv">1</span> <span class="kw">and</span> <span class="st">"[voxtral]"</span> <span class="kw">in</span> ws[<span class="dv">0</span>]</span>
+<span id="cb15-29"><a href="#cb15-29" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-30"><a href="#cb15-30" aria-hidden="true" tabindex="-1"></a><span class="co"># confirm_seam headless path</span></span>
+<span id="cb15-31"><a href="#cb15-31" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> confirm_seam(<span class="st">"boundary-review"</span>, [<span class="st">"x"</span>], [], assume_yes<span class="op">=</span><span class="va">True</span>) <span class="kw">is</span> <span class="va">True</span></span>
+<span id="cb15-32"><a href="#cb15-32" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(<span class="st">"pipeline pure-logic checks OK"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>pipeline pure-logic checks OK</code></pre>
+</div>
+</div>
+<div id="ports-builder-tests" class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb17"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Composition builder + folder pure-logic checks (no capabilities involved)</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> cjm_capability_primitives.transcription <span class="im">import</span> TranscriptionResult</span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> cjm_capability_primitives.media_processing <span class="im">import</span> MediaSegment, MediaArtifactResult</span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> cjm_substrate.core.ports <span class="im">import</span> new_composition_run</span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Typed MediaSegments (what segment_audio now returns via the media_processing task).</span></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>_raw <span class="op">=</span> [</span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>    MediaSegment(index<span class="op">=</span><span class="dv">0</span>, output_path<span class="op">=</span><span class="st">"/seg0.flac"</span>, start<span class="op">=</span><span class="fl">0.0</span>, end<span class="op">=</span><span class="fl">280.0</span>, duration<span class="op">=</span><span class="fl">280.0</span>),</span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>    MediaSegment(index<span class="op">=</span><span class="dv">1</span>, output_path<span class="op">=</span><span class="st">"/seg1.flac"</span>, start<span class="op">=</span><span class="fl">280.0</span>, end<span class="op">=</span><span class="fl">560.0</span>, duration<span class="op">=</span><span class="fl">280.0</span>),</span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a>]</span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a>_comp, _metas <span class="op">=</span> build_segment_composition(_raw, <span class="st">"runX"</span>, <span class="dv">0</span>, <span class="st">"ffmpeg"</span>, [<span class="st">"whisper"</span>])</span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> <span class="bu">len</span>(_comp.nodes) <span class="op">==</span> <span class="dv">4</span> <span class="kw">and</span> <span class="bu">len</span>(_metas) <span class="op">==</span> <span class="dv">2</span></span>
+<span id="cb17-13"><a href="#cb17-13" aria-hidden="true" tabindex="-1"></a><span class="co"># Each pipe: transcribe bound to its OWN convert's output_path.</span></span>
+<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _comp.nodes[<span class="dv">1</span>].kwargs[<span class="st">"audio"</span>] <span class="op">==</span> OutputRef(<span class="st">"convert_0000"</span>, <span class="st">"output_path"</span>)</span>
+<span id="cb17-15"><a href="#cb17-15" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _comp.nodes[<span class="dv">3</span>].kwargs[<span class="st">"audio"</span>] <span class="op">==</span> OutputRef(<span class="st">"convert_0001"</span>, <span class="st">"output_path"</span>)</span>
+<span id="cb17-16"><a href="#cb17-16" aria-hidden="true" tabindex="-1"></a><span class="co"># Per-item provenance kwargs are STATIC (host-computed at construction).</span></span>
+<span id="cb17-17"><a href="#cb17-17" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _comp.nodes[<span class="dv">1</span>].kwargs[<span class="st">"job_id"</span>] <span class="op">==</span> <span class="st">"runX_src0_seg0000_t0"</span></span>
+<span id="cb17-18"><a href="#cb17-18" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _comp.nodes[<span class="dv">3</span>].kwargs[<span class="st">"source_start_time"</span>] <span class="op">==</span> <span class="fl">280.0</span></span>
+<span id="cb17-19"><a href="#cb17-19" aria-hidden="true" tabindex="-1"></a><span class="co"># The two pipes are independent: converts have no deps; fan-out parallelizes.</span></span>
+<span id="cb17-20"><a href="#cb17-20" aria-hidden="true" tabindex="-1"></a>_run <span class="op">=</span> new_composition_run(_comp, <span class="st">"r"</span>)</span>
+<span id="cb17-21"><a href="#cb17-21" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _run.ready_nodes() <span class="op">==</span> [<span class="st">"convert_0000"</span>, <span class="st">"convert_0001"</span>]</span>
+<span id="cb17-22"><a href="#cb17-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-23"><a href="#cb17-23" aria-hidden="true" tabindex="-1"></a><span class="co"># Fold a completed run back into records (per-transcriber transcripts).</span></span>
+<span id="cb17-24"><a href="#cb17-24" aria-hidden="true" tabindex="-1"></a>_run.record_result(<span class="st">"convert_0000"</span>, NodeState.completed, result<span class="op">=</span>MediaArtifactResult(output_path<span class="op">=</span><span class="st">"/c0.wav"</span>))</span>
+<span id="cb17-25"><a href="#cb17-25" aria-hidden="true" tabindex="-1"></a>_run.record_result(<span class="st">"convert_0001"</span>, NodeState.completed, result<span class="op">=</span>MediaArtifactResult(output_path<span class="op">=</span><span class="st">"/c1.wav"</span>))</span>
+<span id="cb17-26"><a href="#cb17-26" aria-hidden="true" tabindex="-1"></a>_run.record_result(<span class="st">"transcribe_t0_0000"</span>, NodeState.completed,</span>
+<span id="cb17-27"><a href="#cb17-27" aria-hidden="true" tabindex="-1"></a>                   result<span class="op">=</span>TranscriptionResult(text<span class="op">=</span><span class="st">"hello"</span>, metadata<span class="op">=</span>{<span class="st">"m"</span>: <span class="dv">1</span>}))</span>
+<span id="cb17-28"><a href="#cb17-28" aria-hidden="true" tabindex="-1"></a>_run.record_result(<span class="st">"transcribe_t0_0001"</span>, NodeState.completed,</span>
+<span id="cb17-29"><a href="#cb17-29" aria-hidden="true" tabindex="-1"></a>                   result<span class="op">=</span>TranscriptionResult(text<span class="op">=</span><span class="st">"world"</span>, metadata<span class="op">=</span>{}))</span>
+<span id="cb17-30"><a href="#cb17-30" aria-hidden="true" tabindex="-1"></a>_run.status <span class="op">=</span> NodeState.completed</span>
+<span id="cb17-31"><a href="#cb17-31" aria-hidden="true" tabindex="-1"></a>_recs <span class="op">=</span> records_from_composition(_run, _metas)</span>
+<span id="cb17-32"><a href="#cb17-32" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> [r.transcripts[<span class="st">"whisper"</span>][<span class="st">"text"</span>] <span class="cf">for</span> r <span class="kw">in</span> _recs] <span class="op">==</span> [<span class="st">"hello"</span>, <span class="st">"world"</span>]</span>
+<span id="cb17-33"><a href="#cb17-33" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _recs[<span class="dv">0</span>].model_input_path <span class="op">==</span> <span class="st">"/c0.wav"</span></span>
+<span id="cb17-34"><a href="#cb17-34" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _recs[<span class="dv">1</span>].transcripts[<span class="st">"whisper"</span>][<span class="st">"job_id"</span>] <span class="op">==</span> <span class="st">"runX_src0_seg0001_t0"</span></span>
+<span id="cb17-35"><a href="#cb17-35" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _recs[<span class="dv">0</span>].duration <span class="op">==</span> <span class="fl">280.0</span></span>
+<span id="cb17-36"><a href="#cb17-36" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-37"><a href="#cb17-37" aria-hidden="true" tabindex="-1"></a><span class="co"># DUAL-transcriber fan-out (stage 5: the named parallel-port adopter): one</span></span>
+<span id="cb17-38"><a href="#cb17-38" aria-hidden="true" tabindex="-1"></a><span class="co"># convert per segment, one transcribe node per transcriber off the same output.</span></span>
+<span id="cb17-39"><a href="#cb17-39" aria-hidden="true" tabindex="-1"></a>_comp2, _metas2 <span class="op">=</span> build_segment_composition(_raw, <span class="st">"runX"</span>, <span class="dv">0</span>, <span class="st">"ffmpeg"</span>, [<span class="st">"whisper"</span>, <span class="st">"voxtral"</span>])</span>
+<span id="cb17-40"><a href="#cb17-40" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> <span class="bu">len</span>(_comp2.nodes) <span class="op">==</span> <span class="dv">6</span></span>
+<span id="cb17-41"><a href="#cb17-41" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _comp2.nodes[<span class="dv">1</span>].kwargs[<span class="st">"audio"</span>] <span class="op">==</span> _comp2.nodes[<span class="dv">2</span>].kwargs[<span class="st">"audio"</span>] <span class="op">==</span> OutputRef(<span class="st">"convert_0000"</span>, <span class="st">"output_path"</span>)</span>
+<span id="cb17-42"><a href="#cb17-42" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _comp2.nodes[<span class="dv">1</span>].kwargs[<span class="st">"job_id"</span>] <span class="op">==</span> <span class="st">"runX_src0_seg0000_t0"</span></span>
+<span id="cb17-43"><a href="#cb17-43" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _comp2.nodes[<span class="dv">2</span>].kwargs[<span class="st">"job_id"</span>] <span class="op">==</span> <span class="st">"runX_src0_seg0000_t1"</span></span>
+<span id="cb17-44"><a href="#cb17-44" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _metas2[<span class="dv">0</span>][<span class="st">"transcribe_nodes"</span>] <span class="op">==</span> {<span class="st">"whisper"</span>: <span class="st">"transcribe_t0_0000"</span>, <span class="st">"voxtral"</span>: <span class="st">"transcribe_t1_0000"</span>}</span>
+<span id="cb17-45"><a href="#cb17-45" aria-hidden="true" tabindex="-1"></a>_run2 <span class="op">=</span> new_composition_run(_comp2, <span class="st">"r2"</span>)</span>
+<span id="cb17-46"><a href="#cb17-46" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _run2.ready_nodes() <span class="op">==</span> [<span class="st">"convert_0000"</span>, <span class="st">"convert_0001"</span>]</span>
+<span id="cb17-47"><a href="#cb17-47" aria-hidden="true" tabindex="-1"></a>_run2.record_result(<span class="st">"convert_0000"</span>, NodeState.completed, result<span class="op">=</span>MediaArtifactResult(output_path<span class="op">=</span><span class="st">"/c0.wav"</span>))</span>
+<span id="cb17-48"><a href="#cb17-48" aria-hidden="true" tabindex="-1"></a>_run2.record_result(<span class="st">"convert_0001"</span>, NodeState.completed, result<span class="op">=</span>MediaArtifactResult(output_path<span class="op">=</span><span class="st">"/c1.wav"</span>))</span>
+<span id="cb17-49"><a href="#cb17-49" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> nid, txt <span class="kw">in</span> [(<span class="st">"transcribe_t0_0000"</span>, <span class="st">"w0"</span>), (<span class="st">"transcribe_t1_0000"</span>, <span class="st">"v0"</span>),</span>
+<span id="cb17-50"><a href="#cb17-50" aria-hidden="true" tabindex="-1"></a>                 (<span class="st">"transcribe_t0_0001"</span>, <span class="st">"w1"</span>), (<span class="st">"transcribe_t1_0001"</span>, <span class="st">"v1"</span>)]:</span>
+<span id="cb17-51"><a href="#cb17-51" aria-hidden="true" tabindex="-1"></a>    _run2.record_result(nid, NodeState.completed, result<span class="op">=</span>TranscriptionResult(text<span class="op">=</span>txt, metadata<span class="op">=</span>{}))</span>
+<span id="cb17-52"><a href="#cb17-52" aria-hidden="true" tabindex="-1"></a>_run2.status <span class="op">=</span> NodeState.completed</span>
+<span id="cb17-53"><a href="#cb17-53" aria-hidden="true" tabindex="-1"></a>_recs2 <span class="op">=</span> records_from_composition(_run2, _metas2)</span>
+<span id="cb17-54"><a href="#cb17-54" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _recs2[<span class="dv">0</span>].transcripts[<span class="st">"whisper"</span>][<span class="st">"text"</span>] <span class="op">==</span> <span class="st">"w0"</span> <span class="kw">and</span> _recs2[<span class="dv">0</span>].transcripts[<span class="st">"voxtral"</span>][<span class="st">"text"</span>] <span class="op">==</span> <span class="st">"v0"</span></span>
+<span id="cb17-55"><a href="#cb17-55" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _recs2[<span class="dv">1</span>].transcripts[<span class="st">"voxtral"</span>][<span class="st">"text"</span>] <span class="op">==</span> <span class="st">"v1"</span></span>
+<span id="cb17-56"><a href="#cb17-56" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-57"><a href="#cb17-57" aria-hidden="true" tabindex="-1"></a><span class="co"># Non-completed run raises with the failed nodes surfaced.</span></span>
+<span id="cb17-58"><a href="#cb17-58" aria-hidden="true" tabindex="-1"></a>_bad <span class="op">=</span> new_composition_run(_comp, <span class="st">"r3"</span>)</span>
+<span id="cb17-59"><a href="#cb17-59" aria-hidden="true" tabindex="-1"></a>_bad.record_result(<span class="st">"convert_0000"</span>, NodeState.failed)</span>
+<span id="cb17-60"><a href="#cb17-60" aria-hidden="true" tabindex="-1"></a>_bad.status <span class="op">=</span> NodeState.failed</span>
+<span id="cb17-61"><a href="#cb17-61" aria-hidden="true" tabindex="-1"></a><span class="cf">try</span>:</span>
+<span id="cb17-62"><a href="#cb17-62" aria-hidden="true" tabindex="-1"></a>    records_from_composition(_bad, _metas)</span>
+<span id="cb17-63"><a href="#cb17-63" aria-hidden="true" tabindex="-1"></a>    <span class="cf">raise</span> <span class="pp">AssertionError</span>(<span class="st">"expected failure surfacing"</span>)</span>
+<span id="cb17-64"><a href="#cb17-64" aria-hidden="true" tabindex="-1"></a><span class="cf">except</span> <span class="pp">RuntimeError</span> <span class="im">as</span> e:</span>
+<span id="cb17-65"><a href="#cb17-65" aria-hidden="true" tabindex="-1"></a>    <span class="cf">assert</span> <span class="st">"convert_0000"</span> <span class="kw">in</span> <span class="bu">str</span>(e)</span>
+<span id="cb17-66"><a href="#cb17-66" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(<span class="st">"composition builder/folder checks OK"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>composition builder/folder checks OK</code></pre>
+</div>
+</div>
+<div id="628a9ba0" class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb19"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Stage 8: opt-in preprocessing inserts a source_separation node FIRST per segment,</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a><span class="co"># and the model-input convert REBINDS to the preprocessing output (full-band raw</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a><span class="co"># -&gt; separate_vocals -&gt; convert -&gt; transcribe). No-preprocessing path unchanged.</span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>_compp, _metasp <span class="op">=</span> build_segment_composition(</span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a>    _raw, <span class="st">"runP"</span>, <span class="dv">0</span>, <span class="st">"ffmpeg"</span>, [<span class="st">"whisper"</span>], preprocessing_capability<span class="op">=</span><span class="st">"cjm-capability-demucs"</span>)</span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a><span class="co"># per segment now: separate -&gt; convert -&gt; transcribe == 3 nodes x 2 segs = 6</span></span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> <span class="bu">len</span>(_compp.nodes) <span class="op">==</span> <span class="dv">6</span></span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a>sep0, conv0, tr0 <span class="op">=</span> _compp.nodes[<span class="dv">0</span>], _compp.nodes[<span class="dv">1</span>], _compp.nodes[<span class="dv">2</span>]</span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a><span class="co"># the separate node routes through the source_separation task channel on raw audio</span></span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> sep0.task_name <span class="op">==</span> <span class="st">"source_separation"</span> <span class="kw">and</span> sep0.method <span class="op">==</span> <span class="st">"separate_vocals"</span></span>
+<span id="cb19-11"><a href="#cb19-11" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> sep0.kwargs[<span class="st">"audio"</span>] <span class="op">==</span> <span class="st">"/seg0.flac"</span></span>
+<span id="cb19-12"><a href="#cb19-12" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> sep0.control <span class="op">==</span> {<span class="st">"force"</span>: <span class="va">False</span>}</span>
+<span id="cb19-13"><a href="#cb19-13" aria-hidden="true" tabindex="-1"></a><span class="co"># the convert input REBOUND to the separation output (NOT the raw seg path)</span></span>
+<span id="cb19-14"><a href="#cb19-14" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> conv0.kwargs[<span class="st">"input_path"</span>] <span class="op">==</span> OutputRef(<span class="st">"separate_0000"</span>, <span class="st">"output_path"</span>)</span>
+<span id="cb19-15"><a href="#cb19-15" aria-hidden="true" tabindex="-1"></a><span class="co"># transcribe still binds to the convert output (vocals -&gt; convert -&gt; transcribe)</span></span>
+<span id="cb19-16"><a href="#cb19-16" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> tr0.kwargs[<span class="st">"audio"</span>] <span class="op">==</span> OutputRef(<span class="st">"convert_0000"</span>, <span class="st">"output_path"</span>)</span>
+<span id="cb19-17"><a href="#cb19-17" aria-hidden="true" tabindex="-1"></a><span class="co"># the separate nodes have no deps -&gt; they run first</span></span>
+<span id="cb19-18"><a href="#cb19-18" aria-hidden="true" tabindex="-1"></a>_runp <span class="op">=</span> new_composition_run(_compp, <span class="st">"rp"</span>)</span>
+<span id="cb19-19"><a href="#cb19-19" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _runp.ready_nodes() <span class="op">==</span> [<span class="st">"separate_0000"</span>, <span class="st">"separate_0001"</span>]</span>
+<span id="cb19-20"><a href="#cb19-20" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _metasp[<span class="dv">0</span>][<span class="st">"separate_node"</span>] <span class="op">==</span> <span class="st">"separate_0000"</span></span>
+<span id="cb19-21"><a href="#cb19-21" aria-hidden="true" tabindex="-1"></a><span class="co"># default (no preprocessing) leaves the convert reading the raw segment + records None</span></span>
+<span id="cb19-22"><a href="#cb19-22" aria-hidden="true" tabindex="-1"></a>_compd, _metasd <span class="op">=</span> build_segment_composition(_raw, <span class="st">"runD"</span>, <span class="dv">0</span>, <span class="st">"ffmpeg"</span>, [<span class="st">"whisper"</span>])</span>
+<span id="cb19-23"><a href="#cb19-23" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _compd.nodes[<span class="dv">0</span>].kwargs[<span class="st">"input_path"</span>] <span class="op">==</span> <span class="st">"/seg0.flac"</span>  <span class="co"># convert reads raw seg directly</span></span>
+<span id="cb19-24"><a href="#cb19-24" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> _metasd[<span class="dv">0</span>][<span class="st">"separate_node"</span>] <span class="kw">is</span> <span class="va">None</span></span>
+<span id="cb19-25"><a href="#cb19-25" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(<span class="st">"preprocessing composition checks OK"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+
+
+</section>
+
+</main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp("https:\/\/cj-mills\.github\.io\/cjm-transcription-core");
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+
+
+
+
+<footer class="footer"><div class="nav-footer"><div class="nav-footer-center"><div class="toc-actions d-sm-block d-md-none"><ul><li><a href="https://github.com/cj-mills/cjm-transcription-core/issues/new" class="toc-action"><i class="bi bi-github"></i>Report an issue</a></li></ul></div></div></div></footer></body></html>
