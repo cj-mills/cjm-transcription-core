@@ -1,8 +1,8 @@
 """OOM backstop stress test (stage-3 ledger): Voxtral-Small-24B on a 24GB GPU.
 
 Walks the full failure arc the stage-3 admission design leans on:
-guaranteed-OOM model load on CUDA -> cuda_oom_to_plugin_resource_error ->
-typed PluginResourceError over the wire error channel -> CR-7 evict + reload +
+guaranteed-OOM model load on CUDA -> cuda_oom_to_capability_resource_error ->
+typed CapabilityResourceError over the wire error channel -> CR-7 evict + reload +
 retry -> structured JobError on the failed member job (+ RETRY_STARTED event)
 -> composition failure propagation (upstream convert node survives, run lands
 failed) -> reconfigure device=cpu -> slow CPU success -> the empirical store
@@ -26,7 +26,7 @@ MANIFESTS = ROOT / ".cjm" / "manifests"
 EMPIRICAL_DB = ROOT / ".cjm" / "empirical_resources.db"
 AUDIO = ROOT / "test_files" / "short_test_audio.mp3"
 MODEL = "mistralai/Voxtral-Small-24B-2507"
-PLUGIN = "cjm-capability-voxtral-hf"
+CAPABILITY = "cjm-capability-voxtral-hf"
 FFMPEG = "cjm-capability-ffmpeg"
 SYSMON = "cjm-capability-monitor-nvidia"
 PHASE1_ONLY = os.environ.get("OOM_PHASE1_ONLY") == "1"
@@ -62,7 +62,7 @@ def pipe_composition() -> Composition:
             "action": "convert", "input_path": str(AUDIO),
             "output_format": "wav", "sample_rate": 16000, "channels": 1,
         }),
-        CompositionNode("transcribe", PLUGIN,
+        CompositionNode("transcribe", CAPABILITY,
                         {"audio": OutputRef("convert", "output_path")}),
     ])
 
@@ -74,15 +74,15 @@ async def main() -> None:
     def meta(name):
         return next(m for m in pm.discovered if m.name == name)
 
-    # local_files_only: the shards are pre-downloaded; the plugin's full-repo
+    # local_files_only: the shards are pre-downloaded; the capability's full-repo
     # snapshot would otherwise re-pull the 48.5GB consolidated.safetensors that
     # from_pretrained never reads (sharded index load) — ledger G6 friction.
     pm.load_capability(meta(SYSMON))
     pm.load_capability(meta(FFMPEG))
-    assert pm.load_capability(meta(PLUGIN), config={"model_id": MODEL, "device": "cuda",
+    assert pm.load_capability(meta(CAPABILITY), config={"model_id": MODEL, "device": "cuda",
                                             "local_files_only": True}), \
-        f"failed to load {PLUGIN}"
-    log.info(f"{PLUGIN} loaded with model_id={MODEL} device=cuda (guaranteed-OOM config)")
+        f"failed to load {CAPABILITY}"
+    log.info(f"{CAPABILITY} loaded with model_id={MODEL} device=cuda (guaranteed-OOM config)")
 
     queue = JobQueue(deps=pm, sysmon_capability_name=SYSMON)
     await queue.start()
@@ -126,7 +126,7 @@ async def main() -> None:
         assert len(retry_events) >= 1, \
             "CR-7 reactive retry did not fire (RETRY_STARTED count 0)"
 
-        rows = empirical_rows(PLUGIN)
+        rows = empirical_rows(CAPABILITY)
         log.info(f"empirical rows after phase 1: {rows}")
         if PHASE1_ONLY:
             failed_rows = [r for r in rows if r[2] < r[1]]
@@ -136,7 +136,7 @@ async def main() -> None:
 
         # ---- Phase 2: reconfigure device=cpu; the SAME composition succeeds.
         log.info("PHASE 2: reconfiguring device=cpu (model reload to system RAM)...")
-        pm.update_plugin_config(PLUGIN, {"model_id": MODEL, "device": "cpu",
+        pm.update_capability_config(CAPABILITY, {"model_id": MODEL, "device": "cpu",
                                      "local_files_only": True})
         t1 = time.time()
         comp_id2 = await queue.submit_composition(pipe_composition())
@@ -153,7 +153,7 @@ async def main() -> None:
 
         # ---- The two-row evidence: same instance, two config hashes —
         # the keying that makes derived admission self-correcting.
-        rows = empirical_rows(PLUGIN)
+        rows = empirical_rows(CAPABILITY)
         log.info(f"empirical rows after phase 2: {rows}")
         assert len(rows) >= 2, f"expected cuda + cpu config rows, got {rows}"
         failed_rows = [r for r in rows if r[2] < r[1]]
@@ -162,7 +162,7 @@ async def main() -> None:
     finally:
         collector.cancel()
         await queue.stop()
-        for name in (PLUGIN, FFMPEG, SYSMON):
+        for name in (CAPABILITY, FFMPEG, SYSMON):
             try:
                 pm.unload_capability(name)
             except Exception:

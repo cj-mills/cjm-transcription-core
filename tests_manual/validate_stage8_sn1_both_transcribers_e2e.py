@@ -13,7 +13,7 @@ repeatable); whisper rides its warm adapter cache, voxtral cold-transcribes
 Two stage-8 milestones in one harness:
   1. {whisper, voxtral} multi-capability DISCOVERY — the compatible set for task
      'transcription' first exceeds 1 (manifest-surface match, UNLOADED-safe: the
-     host instantiates no plugin; the GenericTranscriptionAdapter binds to BOTH
+     host instantiates no capability; the GenericTranscriptionAdapter binds to BOTH
      by recorded `transcribe`+`get_current_config` surface).
   2. both-transcriber FAITHFULNESS — voxtral's SN-I output is byte-identical to
      the pre-migration corpus (261,617 chars, deterministic greedy decode); the
@@ -139,9 +139,9 @@ def main() -> None:
          "run", str(SN1_SRC),
          "--transcriber", WHISPER,
          "--transcriber", VOXTRAL,
-         "--graph-plugin", "cjm-capability-graph-sqlite",
+         "--graph-capability", "cjm-capability-graph-sqlite",
          "--graph-db-path", str(SCRATCH_DB),
-         "--sysmon-plugin", "cjm-capability-monitor-nvidia",
+         "--sysmon-capability", "cjm-capability-monitor-nvidia",
          "--actor", ACTOR, "--output", str(TX_OUT), "--yes"],
         cwd=TRANSCRIPTION)
     print(f"   wall {time.monotonic() - t0:.1f}s")
@@ -169,7 +169,7 @@ def main() -> None:
          "run", str(TX_OUT),
          "--text-from", VOXTRAL,
          "--graph-db-path", str(SCRATCH_DB),
-         "--sysmon-plugin", "cjm-capability-monitor-nvidia",
+         "--sysmon-capability", "cjm-capability-monitor-nvidia",
          "--actor", ACTOR, "--output", str(DECOMP_OUT), "--yes"],
         cwd=DECOMP)
     print(f"   wall {time.monotonic() - t0:.1f}s")

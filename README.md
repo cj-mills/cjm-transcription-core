@@ -14,10 +14,11 @@ pip install cjm_transcription_core
     nbs/
     ├── boundaries.ipynb # Wall-clock-aware segment boundary computation: group VAD speech chunks into segments cut at silence-gap midpoints.
     ├── cli.ipynb        # The CLI driver — the workflow core's first (and currently only) frontend.
+    ├── emission.ipynb   # Graph-root emission (CR-18 revolution 2): a completed source EMITS `Source -> AudioSegment -> Transcript` into the shared context graph — the graph now BEGINS at transcription (where-graph-begins resolution: ingestion is the first EXTENDER that plants the root). Deterministic identity tuples make emission idempotent: re-runs (cache hits included) collide into verified no-ops instead of duplicating roots (the E13 hazard, relocated into graph creation and discharged).
     ├── models.ipynb     # Data shapes for the transcription pipeline: run configuration + the run-manifest result containers.
     └── pipeline.ipynb   # The headless transcription pipeline: VAD analysis → boundary computation → segment cutting → per-segment model-input conversion → transcription, composed over capability workers via the substrate's `JobQueue`.
 
-Total: 4 notebooks
+Total: 5 notebooks
 
 ## Module Dependencies
 
@@ -25,16 +26,19 @@ Total: 4 notebooks
 graph LR
     boundaries["boundaries<br/>boundaries"]
     cli["cli<br/>cli"]
+    emission["emission<br/>emission"]
     models["models<br/>models"]
     pipeline["pipeline<br/>pipeline"]
 
-    cli --> pipeline
     cli --> models
-    pipeline --> models
+    cli --> pipeline
+    emission --> models
     pipeline --> boundaries
+    pipeline --> emission
+    pipeline --> models
 ```
 
-*4 cross-module dependencies detected*
+*6 cross-module dependencies detected*
 
 ## CLI Reference
 
@@ -42,7 +46,8 @@ graph LR
 
     usage: cjm-transcription-core [-h] {run} ...
 
-    Headless transcription pipeline: VAD -> segment -> convert -> transcribe.
+    Headless transcription pipeline: VAD -> segment -> convert -> transcribe [->
+    graph emission].
 
     positional arguments:
       {run}
@@ -117,6 +122,7 @@ def compute_segment_boundaries(
 from cjm_transcription_core.cli import (
     logger,
     build_parser,
+    parse_max_concurrent,
     load_capabilities,
     run_command,
     main
@@ -131,9 +137,18 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
 ```
 
 ``` python
+def parse_max_concurrent(
+    values: Optional[List[str]],  # Repeatable NAME=N CLI values (None = no overrides)
+) -> Dict[str, int]:  # Capability name -> SG-33 max_concurrent_requests
+    "Parse repeatable `--max-concurrent NAME=N` values into a per-capability cap map."
+```
+
+``` python
 def load_capabilities(
     manager: CapabilityManager,   # Freshly constructed manager
     instance_ids: List[str],  # Capability names to load (default instances)
+    configs: Optional[Dict[str, Dict[str, Any]]] = None,  # Per-capability config overrides (caller-wins, C8)
+    max_concurrent: Optional[Dict[str, int]] = None,  # Per-capability SG-33 max_concurrent_requests (unset = queue default of 1)
 ) -> None
     "Discover manifests + load each requested capability (default instance)."
 ```
@@ -150,6 +165,81 @@ def main(
     argv: Optional[List[str]] = None,  # Argument list override (None = sys.argv)
 ) -> int:  # Process exit code
     "CLI entry point (console script: `cjm-transcription-core`)."
+```
+
+### emission (`emission.ipynb`)
+
+> Graph-root emission (CR-18 revolution 2): a completed source EMITS
+> `Source -> AudioSegment -> Transcript` into the shared context graph —
+> the graph now BEGINS at transcription (where-graph-begins resolution:
+> ingestion is the first EXTENDER that plants the root). Deterministic
+> identity tuples make emission idempotent: re-runs (cache hits
+> included) collide into verified no-ops instead of duplicating roots
+> (the E13 hazard, relocated into graph creation and discharged).
+
+#### Import
+
+``` python
+from cjm_transcription_core.emission import (
+    logger,
+    build_source_emission,
+    emit_source_graph
+)
+```
+
+#### Functions
+
+``` python
+def build_source_emission(
+    src: SourceResult,                          # Completed per-source pipeline result (0.3.0 shape)
+    transcriber_config_hashes: Dict[str, str],  # transcriber -> effective config hash (Transcript identity input)
+    chain: Optional[List[str]] = None,          # Preprocessing chain that produced the model-inputs ([]/None = raw convert-only)
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:  # (nodes, edges, ids)
+    """
+    Build the graph-root payload for one source (pure; no capability calls).
+    
+    Emits the locked layer schema: one `Source` (identity = file content hash)
+    -> coarse `AudioSegment` boundary spine (PART_OF / NEXT / STARTS_WITH via
+    `spine_edges`) -> one `AudioRendition` per segment (the model-input WAV; it
+    DERIVED_FROM its AudioSegment) -> per-transcriber `Transcript` variants
+    (DERIVED_FROM their rendition; identity mirrors the capability cache key).
+    Returns the ids dict {"source", "audio_segments", "renditions",
+    "transcripts"} for callers (decomp recomputes these same ids from the
+    manifest — no stored-id coupling).
+    
+    `chain` is the AudioRendition IDENTITY input: an empty chain is the raw
+    convert-only rendition; a non-empty chain (e.g. demucs vocals) yields a
+    DISTINCT rendition node under the SAME AudioSegment, so raw + preprocessed
+    model-inputs of one boundary COEXIST in one graph (the divergent
+    model_input_hash now lives on distinct rendition nodes, not a colliding
+    AudioSegment). The chain rides into the node id, so re-derivation reproduces
+    it from the manifest alone.
+    """
+```
+
+``` python
+async def emit_source_graph(
+    queue: JobQueue,                            # Started job queue
+    graph_id: str,                              # Graph-storage capability instance id
+    src: SourceResult,                          # Completed per-source pipeline result
+    transcriber_config_hashes: Dict[str, str],  # transcriber -> effective config hash
+    run_id: str,                                # Run id (recorded on the boundary Derivation event)
+    chain: Optional[List[str]] = None,          # Preprocessing chain that produced the model-inputs ([]/None = raw)
+) -> Dict[str, Any]:  # Emission record for the manifest
+    """
+    Idempotently emit one source's graph root through the task channel.
+    
+    `extend_graph` = emit-if-absent + verify-if-present, so a re-run over
+    cached content collides into a verified no-op (stress item 4) and a second
+    transcriber's run EXTENDS the existing root (only its Transcript nodes are
+    new). The host's contribution this run — boundary computation and/or the
+    preprocessing chain that produced new renditions — is declared as a
+    `Derivation` event (provenance-by-declaration) ONLY when it actually created
+    AudioSegment or AudioRendition nodes (a preprocessing-ON run into a graph
+    that already holds the raw boundaries creates new renditions but no new
+    boundaries — both cases declare; verified re-emissions don't spam the audit
+    trail).
+    """
 ```
 
 ### models (`models.ipynb`)
@@ -183,13 +273,18 @@ def new_run_id() -> str:  # e.g. "run_20260607_153000_1a2b3c4d"
 class PipelineConfig:
     "Configuration for one transcription pipeline run."
     
-    vad_plugin: str = 'cjm-capability-silero-vad'  # VAD capability instance id
-    ffmpeg_plugin: str = 'cjm-capability-ffmpeg'  # Convert/segment capability instance id
-    transcriber_plugin: str = 'cjm-capability-whisper'  # Transcription capability instance id
-    max_segment_duration: float = 300.0  # Wall-clock cap per segment in seconds (pre-emptive cuts)
+    vad_capability: str = 'cjm-capability-silero-vad'  # VAD capability instance id
+    ffmpeg_capability: str = 'cjm-capability-ffmpeg'  # Convert/segment capability instance id
+    transcriber_capabilities: List[str] = field(...)  # Transcription capability instance ids (one or more; stage-5 dual-transcriber)
+    graph_capability: Optional[str]  # Graph-storage capability for Source/AudioSegment/Transcript emission (None = no emission)
+    graph_db_path: Optional[str]  # Explicit graph DB path override (caller-wins config, C8/F10)
+    preprocessing_capability: Optional[str]  # Preprocessing capability instance id (None = preprocessing OFF)
+    preprocessing_task: str = 'source_separation'  # Task-channel task for the preprocessing step
+    preprocessing_method: str = 'separate_vocals'  # Task-channel method for the preprocessing step
+    max_segment_duration: float = 220.0  # Wall-clock cap per segment in seconds (pre-emptive cuts). 220 keeps each segment's forced-alignment input clear of qwen3-FA's ~240-250s degeneracy cliff (300 sat AT the cliff -> tail over-assignment; FA over-assignment investigation 2026-06-16; 220 chosen over 240 to absorb the soft-cap silence-gap overshoot)
     sample_rate: int = 16000  # Model-input sample rate for the per-segment convert step
     channels: int = 1  # Model-input channel count
-    force: bool = False  # Bypass capability-side caches (VAD + transcription)
+    force: bool = False  # Bypass capability-side caches (VAD + transcription + preprocessing)
     assume_yes: bool = False  # Auto-accept HITL seams (headless / corpus-generation mode)
     
     def to_dict(self) -> Dict[str, Any]:  # Plain-dict snapshot for the run manifest
@@ -199,7 +294,15 @@ class PipelineConfig:
 ``` python
 @dataclass
 class SegmentRecord:
-    "One transcribed segment of a source audio file."
+    """
+    One segment of a source audio file, with per-transcriber transcripts.
+    
+    Manifest schema 0.2.0: the single text/job_id pair became `transcripts`
+    keyed by transcriber capability name — transcription emits SYMMETRIC
+    variants; the authority designation is the decomp consumer's choice
+    (stage-5 ratified design). `model_input_hash` content-addresses the
+    model-input WAV (the audio of record, E14) for graph emission identity.
+    """
     
     index: int  # 0-based position within the source
     start: float  # Segment start in source-audio seconds
@@ -207,9 +310,8 @@ class SegmentRecord:
     duration: float  # Wall-clock segment duration in seconds
     segment_path: str  # Cut audio file (source codec) from ffmpeg `segment_audio`
     model_input_path: str  # Model-ready WAV from the per-segment `convert` step
-    job_id: str  # Provenance job id passed to the transcriber (keys its DB row)
-    text: str  # Transcribed text
-    metadata: Dict[str, Any] = field(...)  # Transcriber-reported metadata
+    model_input_hash: str = ''  # Content hash over the model-input WAV ("algo:hexdigest")
+    transcripts: Dict[str, Dict[str, Any]] = field(...)  # transcriber -> {job_id, text, metadata}
     
     def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for the run manifest
         "Serialize to a plain dict."
@@ -224,7 +326,10 @@ class SourceResult:
     duration: float  # Source duration in seconds
     vad_chunk_count: int  # Number of speech chunks VAD detected
     batch_key: str  # ffmpeg `segment_audio` batch key linking the cut files
+    content_hash: str = ''  # Content hash over the source file (Source node identity input)
     segments: List[SegmentRecord] = field(...)  # Ordered transcribed segments
+    chain: List[str] = field(...)  # Preprocessing chain that produced the model-inputs ([] = raw convert-only); AudioRendition identity input — extenders recompute the rendition id from it
+    graph: Optional[Dict[str, Any]]  # Emission record: {source_node_id, nodes_added, nodes_verified, edges_added} (None = not emitted)
     
     def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for the run manifest
             """Serialize to a plain dict with nested segments."""
@@ -236,13 +341,23 @@ class SourceResult:
 ``` python
 @dataclass
 class RunManifest:
-    "Durable record of one pipeline run (proto-bundle; see CR-20)."
+    """
+    Durable record of one pipeline run (proto-bundle; see CR-20).
+    
+    Schema 0.3.0 (AudioRendition era): per-source `chain` records the
+    preprocessing chain that produced the model-inputs ([] = raw convert-only),
+    so a downstream extender can RECOMPUTE the deterministic AudioRendition node
+    id (and the Transcript/Segment ids keyed on it) with no search. Builds on
+    0.2.0's per-segment `transcripts` keyed by transcriber + source
+    `content_hash` + per-segment `model_input_hash` + capability `config_hash`.
+    """
     
     run_id: str  # Unique run identifier
     created_at: float  # Unix timestamp at run start
     config: Dict[str, Any]  # PipelineConfig snapshot
-    plugins: Dict[str, Dict[str, Any]] = field(...)  # instance_id -> {name, version, db_path}
+    capabilities: Dict[str, Dict[str, Any]] = field(...)  # instance_id -> {name, version, db_path, config_hash}
     sources: List[SourceResult] = field(...)  # Per-source results, input order
+    graph: Optional[Dict[str, Any]]  # Emission target: {capability, db_path} (None = no emission this run)
     FORMAT: str = field(...)  # Manifest format tag
     VERSION: str = field(...)  # Manifest schema version
     
@@ -271,40 +386,24 @@ class RunManifest:
 ``` python
 from cjm_transcription_core.pipeline import (
     logger,
-    field_of,
     submit_and_wait,
     normalize_vad_result,
+    convert_for_vad,
     analyze_vad,
     probe_duration,
     cut_segments,
-    convert_for_model,
-    transcribe_segment,
+    build_segment_composition,
+    records_from_composition,
     tier1_segment_checks,
     tier1_transcript_checks,
     confirm_seam,
     run_source,
-    collect_plugin_info,
+    collect_capability_info,
     run_pipeline
 )
 ```
 
 #### Functions
-
-``` python
-def field_of(
-    result: Any,          # Capability result — dict over the proxy wire, object in-process
-    key: str,             # Field name to read
-    default: Any = None,  # Fallback when absent
-) -> Any:  # The field value or the default
-    """
-    Read a field from a dict-or-object capability result.
-    
-    Results cross the worker HTTP boundary as JSON dicts but are dataclass
-    instances in-process; every consumer in the ecosystem currently
-    re-implements this tolerance at each call site (pass-2 evidence: wire-shape
-    normalization belongs in a typed layer, not at every consumer).
-    """
-```
 
 ``` python
 async def submit_and_wait(
@@ -313,19 +412,42 @@ async def submit_and_wait(
 
 ``` python
 def normalize_vad_result(
-    result: Any,  # MediaAnalysisResult (or proxy dict) from the VAD capability
+    result: VADResult,  # Typed VAD result (wire-decoded at the proxy)
 ) -> Tuple[List[Dict[str, float]], float]:  # (sorted speech chunks [{start, end}], reported duration)
     """
-    Normalize a VAD result into sorted speech chunks + the reported duration.
+    Normalize a typed VAD result into sorted speech chunks + the reported duration.
     
-    Duration comes from the result metadata; returns 0.0 when the capability
-    did not report one (callers fall back to an ffmpeg probe).
+    Stage 8 (Option C): the result arrives as a `VADResult`
+    with typed `TimeRange` ranges — the dict-or-object tolerance (`field_of`,
+    evidence E5) and the start/start_time key-variance handling retired with
+    the untyped wire. Duration comes from the result metadata; returns 0.0
+    when the capability did not report one (callers fall back to an ffmpeg
+    probe).
+    """
+```
+
+``` python
+async def convert_for_vad(
+    queue: JobQueue,
+    ffmpeg_id: str,            # ffmpeg capability instance id
+    audio_path: str,          # Source audio to convert
+    sample_rate: int = 16000, # Target rate (Silero supports 8k/16k)
+    channels: int = 1,        # Mono
+    force: bool = False,      # Per-call cache-bypass (rides CallEnvelope.control)
+) -> str:  # Path to the model-ready (mono, target-rate, soxr-resampled) audio
+    """
+    Convert a source to MODEL-READY audio for VAD via the ffmpeg `convert` action.
+    
+    Stage 8 (Option C): VAD operates on model-ready audio — the in-tool librosa
+    decode/resample retired, so the whole source is converted once here (ffmpeg,
+    soxr resampler) and the returned path feeds analyze_vad. Boundaries come back
+    in seconds and apply to the ORIGINAL source for cutting.
     """
 ```
 
 ``` python
 async def analyze_vad(
-    "Run VAD analysis on one audio file."
+    "Run VAD analysis on one model-ready audio file (task channel: vad/detect_speech)."
 ```
 
 ``` python
@@ -343,35 +465,57 @@ async def cut_segments(
     ffmpeg_id: str,                      # ffmpeg capability instance id
     audio_path: str,                     # Source audio to cut
     boundaries: List[Dict[str, float]],  # [{start, end}, ...] from compute_segment_boundaries
-) -> Tuple[List[Dict[str, Any]], str]:  # (per-segment dicts from ffmpeg, batch_key)
+    force: bool = False,                 # Per-call cache-bypass (rides CallEnvelope.control)
+) -> Tuple[List[Any], str]:  # (typed MediaSegments from ffmpeg, batch_key)
     "Cut the source audio at the computed boundaries via ffmpeg `segment_audio`."
 ```
 
 ``` python
-async def convert_for_model(
-    queue: JobQueue,
-    ffmpeg_id: str,            # ffmpeg capability instance id
-    input_path: str,           # Segment audio file to normalize
-    sample_rate: int = 16000,  # Target sample rate
-    channels: int = 1,         # Target channel count
-) -> str:  # Path to the model-ready WAV
+def build_segment_composition(
+    raw_segments: List[Any],  # Typed MediaSegments from ffmpeg segment_audio
+    run_id: str,           # Run id (prefixes per-segment provenance job ids)
+    source_index: int,     # Position of this source within the run
+    ffmpeg_id: str,        # ffmpeg capability instance id
+    transcriber_ids: List[str],  # Transcription capability instance ids (one or more)
+    sample_rate: int = 16000,  # Model-input sample rate
+    channels: int = 1,         # Model-input channel count
+    force: bool = False,       # Per-call cache-bypass control flag
+    preprocessing_capability: Optional[str] = None,    # Opt-in audio-preprocessing capability (None = off)
+    preprocessing_task: str = "source_separation", # Task-channel task for the preprocessing step
+    preprocessing_method: str = "separate_vocals", # Task-channel method for the preprocessing step
+) -> Tuple[Composition, List[Dict[str, Any]]]:  # (composition, per-segment meta rows)
     """
-    Convert one segment to a model-ready WAV via ffmpeg `convert`.
+    Build the per-source fan-out composition: N independent [preprocess→]convert→(T× transcribe) pipes.
     
-    Audio prep is an upstream ffmpeg concern (Track 12); transcription
-    capabilities receive model-ready files. Threaded manually (run → read
-    `output_path` → submit next) because `submit_sequence` cannot pipe step
-    outputs to step inputs (CR-16).
+    Host-constructed fan-out (stage-3 ratified shape): the host computes every
+    per-item kwarg statically; the only execution-time unknowns — the hashed
+    output paths of the preprocessing + convert steps — flow through `OutputRef`
+    bindings. Stage 5 (dual-transcriber = the named parallel-port adopter): each
+    segment's convert output fans out to ONE transcribe node PER TRANSCRIBER.
+    
+    Stage 8 (opt-in preprocessing): when `preprocessing_capability` is set, a
+    preprocessing node (e.g. Demucs vocals isolation) runs FIRST on the FULL-BAND
+    raw segment, and the model-input convert consumes ITS output (vocals →
+    convert → transcribe). The convert output — recorded as `model_input_path` —
+    is therefore the vocals-isolated model-ready WAV, which decomp's VAD+FA
+    inherit for free. Routed through the task channel by (preprocessing_task,
+    preprocessing_method) so the slot is FAMILY-AGNOSTIC.
     """
 ```
 
 ``` python
-async def transcribe_segment(
+def records_from_composition(
+    crun: CompositionRun,          # Terminal composition run
+    metas: List[Dict[str, Any]],   # Meta rows from build_segment_composition
+) -> List[SegmentRecord]:  # Ordered per-segment records
     """
-    Transcribe one model-ready segment, passing per-call provenance kwargs.
+    Fold a completed segment composition back into SegmentRecords.
     
-    `job_id` / `source_*_time` ride the CR-15 identity/provenance kwarg channel;
-    `force` is a per-call control flag (CR-15 category 4).
+    Raises on a non-completed run, surfacing the failed nodes' structured
+    errors — under fail_fast a single segment failure stops the source,
+    matching the pre-ports loop where the first raise aborted the source.
+    Stage 5: each record carries per-transcriber `transcripts` (symmetric
+    variants; authority is the decomp consumer's choice).
     """
 ```
 
@@ -422,29 +566,56 @@ async def run_source(
     run_id: str,          # Run id (prefixes per-segment job ids)
     source_index: int,    # Position of this source within the run
 ) -> Optional[SourceResult]:  # None when the operator aborts at a seam
-    "Run the full pipeline for one source: VAD → boundaries → cut → convert → transcribe."
+    "Run the full pipeline for one source: VAD → boundaries → cut → [preprocess →] convert → transcribe."
 ```
 
 ``` python
-def collect_plugin_info(
+def collect_capability_info(
     manager: CapabilityManager,   # Manager holding the loaded capabilities
     instance_ids: List[str],  # Instance ids to record
-) -> Dict[str, Dict[str, Any]]:  # instance_id -> {name, version, db_path}
-    "Record capability identity + data-DB pointers for the run manifest (provenance)."
+) -> Dict[str, Dict[str, Any]]:  # instance_id -> {name, version, db_path, config_hash}
+    """
+    Record capability identity + data-DB pointers for the run manifest (provenance).
+    
+    Stage 5: also records each capability's EFFECTIVE config hash (the same
+    `compute_config_hash` the empirical store keys on) — Transcript node
+    identity is (audio segment, transcriber, config_hash), so the manifest must
+    carry the hash for downstream id recomputation. `db_path` prefers the
+    effective config over the manifest default (the D19 lesson). Stage 6 (0.2.1): the EFFECTIVE config
+    dict is recorded READABLY beside its hash -- the I8 lesson (a persisted
+    stress config was only diagnosable by hash archaeology; bundle recipients
+    should read model identity directly).
+    """
+```
+
+``` python
+def _journal_run_event(
+    """
+    Append a host-tier run event to the journal (CR-14 follow-up).
+    
+    The cores are the trusted host writer class: RUN_STARTED/RUN_FINISHED
+    bracket the run so the run manifest (same run_id) links to every job row
+    the run produced. No-op when the manager has no journal store (test
+    doubles); append failures stay LOUD (journal contract).
+    """
 ```
 
 ``` python
 async def run_pipeline(
-    manager: CapabilityManager,  # Manager with the three capabilities loaded
+    manager: CapabilityManager,  # Manager with the capabilities loaded
     queue: JobQueue,         # Started job queue
     cfg: PipelineConfig,     # Run configuration
     sources: List[str],      # Source audio paths, in order
     run_id: Optional[str] = None,  # Override run id (default: generated)
+    actor: Optional[str] = None,   # Who/what initiated (journal attribution; CLI default cli:<user>)
 ) -> RunManifest:  # Manifest of everything the run produced
     """
     Run the transcription pipeline over the given sources, in order.
     
     An operator abort at any seam stops the run; the manifest holds the sources
-    completed so far (capability-side caches make re-runs cheap).
+    completed so far (capability-side caches make re-runs cheap). With
+    `cfg.graph_capability` set, each completed source EMITS the graph root
+    (Source → AudioSegment → AudioRendition → Transcript; CR-18 revolution 2)
+    idempotently — re-runs verify-collide instead of duplicating.
     """
 ```

@@ -7,7 +7,7 @@ Docs: https://cj-mills.github.io/cjm-transcription-corepipeline.html.md"""
 # %% auto #0
 __all__ = ['logger', 'submit_and_wait', 'normalize_vad_result', 'convert_for_vad', 'analyze_vad', 'probe_duration',
            'cut_segments', 'build_segment_composition', 'records_from_composition', 'tier1_segment_checks',
-           'tier1_transcript_checks', 'confirm_seam', 'run_source', 'collect_plugin_info', 'run_pipeline']
+           'tier1_transcript_checks', 'confirm_seam', 'run_source', 'collect_capability_info', 'run_pipeline']
 
 # %% ../nbs/pipeline.ipynb #c7cb2030
 import logging
@@ -160,7 +160,7 @@ def build_segment_composition(
     sample_rate: int = 16000,  # Model-input sample rate
     channels: int = 1,         # Model-input channel count
     force: bool = False,       # Per-call cache-bypass control flag
-    preprocessing_plugin: Optional[str] = None,    # Opt-in audio-preprocessing capability (None = off)
+    preprocessing_capability: Optional[str] = None,    # Opt-in audio-preprocessing capability (None = off)
     preprocessing_task: str = "source_separation", # Task-channel task for the preprocessing step
     preprocessing_method: str = "separate_vocals", # Task-channel method for the preprocessing step
 ) -> Tuple[Composition, List[Dict[str, Any]]]:  # (composition, per-segment meta rows)
@@ -172,7 +172,7 @@ def build_segment_composition(
     bindings. Stage 5 (dual-transcriber = the named parallel-port adopter): each
     segment's convert output fans out to ONE transcribe node PER TRANSCRIBER.
 
-    Stage 8 (opt-in preprocessing): when `preprocessing_plugin` is set, a
+    Stage 8 (opt-in preprocessing): when `preprocessing_capability` is set, a
     preprocessing node (e.g. Demucs vocals isolation) runs FIRST on the FULL-BAND
     raw segment, and the model-input convert consumes ITS output (vocals →
     convert → transcribe). The convert output — recorded as `model_input_path` —
@@ -194,9 +194,9 @@ def build_segment_composition(
         # (vocals), so model_input_path becomes the vocals-isolated WAV.
         convert_input: Any = seg_path
         separate_node: Optional[str] = None
-        if preprocessing_plugin:
+        if preprocessing_capability:
             separate_node = f"separate_{idx:04d}"
-            nodes.append(CompositionNode(separate_node, preprocessing_plugin, {
+            nodes.append(CompositionNode(separate_node, preprocessing_capability, {
                 "audio": seg_path,
             }, task_name=preprocessing_task, method=preprocessing_method,
                control={"force": force}))
@@ -363,12 +363,12 @@ async def run_source(
     #    (duration falls back to an ffmpeg probe when unreported). NOTE: the
     #    chunking VAD runs on the RAW (converted) source — preprocessing applies
     #    to the per-segment transcription/decomp path, not this chunking pass.
-    vad_audio = await convert_for_vad(queue, cfg.ffmpeg_plugin, source_path,
+    vad_audio = await convert_for_vad(queue, cfg.ffmpeg_capability, source_path,
                                       sample_rate=cfg.sample_rate, channels=cfg.channels,
                                       force=cfg.force)
-    chunks, duration = await analyze_vad(queue, cfg.vad_plugin, vad_audio, force=cfg.force)
+    chunks, duration = await analyze_vad(queue, cfg.vad_capability, vad_audio, force=cfg.force)
     if duration <= 0:
-        duration = await probe_duration(queue, cfg.ffmpeg_plugin, source_path)
+        duration = await probe_duration(queue, cfg.ffmpeg_capability, source_path)
     logger.info(f"[src {source_index}] VAD: {len(chunks)} speech chunks over {duration:.1f}s")
 
     # 2. Boundaries (pure logic)
@@ -388,18 +388,18 @@ async def run_source(
         return None
 
     # 4. Cut the source at the boundaries
-    raw_segments, batch_key = await cut_segments(queue, cfg.ffmpeg_plugin, source_path, boundaries,
+    raw_segments, batch_key = await cut_segments(queue, cfg.ffmpeg_capability, source_path, boundaries,
                                                  force=cfg.force)
 
     # 5. Per segment: [preprocess →] convert → (T× transcribe) as ONE composition
     # of N independent pipes (CR-16 ports; stage-5 dual-transcriber fan-out;
-    # stage-8 opt-in preprocessing). When cfg.preprocessing_plugin is set, each
+    # stage-8 opt-in preprocessing). When cfg.preprocessing_capability is set, each
     # segment's full-band audio is vocals-isolated before the model-input convert.
     comp, metas = build_segment_composition(
         raw_segments, run_id, source_index,
-        cfg.ffmpeg_plugin, cfg.transcriber_plugins,
+        cfg.ffmpeg_capability, cfg.transcriber_capabilities,
         sample_rate=cfg.sample_rate, channels=cfg.channels, force=cfg.force,
-        preprocessing_plugin=cfg.preprocessing_plugin,
+        preprocessing_capability=cfg.preprocessing_capability,
         preprocessing_task=cfg.preprocessing_task,
         preprocessing_method=cfg.preprocessing_method,
     )
@@ -419,7 +419,7 @@ async def run_source(
 
     # 6. HITL seam: transcript review
     total_chars = {t: sum(len(r.transcripts.get(t, {}).get("text") or "") for r in records)
-                   for t in cfg.transcriber_plugins}
+                   for t in cfg.transcriber_capabilities}
     chars_summary = "  ".join(f"{t}: {n} chars" for t, n in total_chars.items())
     if not confirm_seam(
         "transcript-review",
@@ -437,7 +437,7 @@ async def run_source(
     )
 
 # %% ../nbs/pipeline.ipynb #f088d591
-def collect_plugin_info(
+def collect_capability_info(
     manager: CapabilityManager,   # Manager holding the loaded capabilities
     instance_ids: List[str],  # Instance ids to record
 ) -> Dict[str, Dict[str, Any]]:  # instance_id -> {name, version, db_path, config_hash}
@@ -464,7 +464,7 @@ def collect_plugin_info(
             if proxy is not None:
                 current_config = proxy.get_current_config() or {}
         except Exception as e:  # Best-effort: identity recording must not fail the run
-            logger.warning(f"collect_plugin_info: get_current_config({iid}) failed: {e}")
+            logger.warning(f"collect_capability_info: get_current_config({iid}) failed: {e}")
         info[iid] = {
             "name": meta.name,
             "version": getattr(meta, "version", None),
@@ -508,7 +508,7 @@ async def run_pipeline(
 
     An operator abort at any seam stops the run; the manifest holds the sources
     completed so far (capability-side caches make re-runs cheap). With
-    `cfg.graph_plugin` set, each completed source EMITS the graph root
+    `cfg.graph_capability` set, each completed source EMITS the graph root
     (Source → AudioSegment → AudioRendition → Transcript; CR-18 revolution 2)
     idempotently — re-runs verify-collide instead of duplicating.
     """
@@ -521,38 +521,38 @@ async def run_pipeline(
     _journal_run_event(manager, SubstrateEventType.RUN_STARTED.value, run_id, actor, {
         "core": "cjm-transcription-core",
         "sources": [str(s) for s in sources],
-        "transcribers": list(cfg.transcriber_plugins),
-        "preprocessing_plugin": cfg.preprocessing_plugin,
-        "graph_plugin": cfg.graph_plugin,
+        "transcribers": list(cfg.transcriber_capabilities),
+        "preprocessing_capability": cfg.preprocessing_capability,
+        "graph_capability": cfg.graph_capability,
     })
-    plugin_ids = ([cfg.vad_plugin, cfg.ffmpeg_plugin]
-                  + ([cfg.preprocessing_plugin] if cfg.preprocessing_plugin else [])
-                  + list(cfg.transcriber_plugins)
-                  + ([cfg.graph_plugin] if cfg.graph_plugin else []))
+    capability_ids = ([cfg.vad_capability, cfg.ffmpeg_capability]
+                  + ([cfg.preprocessing_capability] if cfg.preprocessing_capability else [])
+                  + list(cfg.transcriber_capabilities)
+                  + ([cfg.graph_capability] if cfg.graph_capability else []))
     manifest = RunManifest(
         run_id=run_id,
         created_at=time.time(),
         config=cfg.to_dict(),
-        plugins=collect_plugin_info(manager, plugin_ids),
+        capabilities=collect_capability_info(manager, capability_ids),
     )
-    if cfg.graph_plugin:
+    if cfg.graph_capability:
         manifest.graph = {
-            "plugin": cfg.graph_plugin,
-            "db_path": (manifest.plugins.get(cfg.graph_plugin) or {}).get("db_path"),
+            "capability": cfg.graph_capability,
+            "db_path": (manifest.capabilities.get(cfg.graph_capability) or {}).get("db_path"),
         }
     transcriber_config_hashes = {
-        t: str((manifest.plugins.get(t) or {}).get("config_hash") or "")
-        for t in cfg.transcriber_plugins
+        t: str((manifest.capabilities.get(t) or {}).get("config_hash") or "")
+        for t in cfg.transcriber_capabilities
     }
     # AudioRendition era: the preprocessing chain that produced the model-inputs
     # ([] = raw convert-only). It is the AudioRendition IDENTITY input — recorded
     # per-source in the manifest so a downstream extender recomputes the rendition
     # id (and the Transcript/Segment ids keyed on it) with no search. One step
-    # today: "<task>:<plugin>@<effective config hash>".
+    # today: "<task>:<capability>@<effective config hash>".
     preprocessing_chain: List[str] = []
-    if cfg.preprocessing_plugin:
-        pp = manifest.plugins.get(cfg.preprocessing_plugin) or {}
-        preprocessing_chain = [f"{cfg.preprocessing_task}:{cfg.preprocessing_plugin}@{pp.get('config_hash') or ''}"]
+    if cfg.preprocessing_capability:
+        pp = manifest.capabilities.get(cfg.preprocessing_capability) or {}
+        preprocessing_chain = [f"{cfg.preprocessing_task}:{cfg.preprocessing_capability}@{pp.get('config_hash') or ''}"]
     status = "completed"
     try:
         for i, src in enumerate(sources):
@@ -564,9 +564,9 @@ async def run_pipeline(
                 status = "aborted"
                 break
             result.chain = list(preprocessing_chain)  # record the rendition-identity chain in the manifest
-            if cfg.graph_plugin:
+            if cfg.graph_capability:
                 result.graph = await emit_source_graph(
-                    queue, cfg.graph_plugin, result, transcriber_config_hashes, run_id,
+                    queue, cfg.graph_capability, result, transcriber_config_hashes, run_id,
                     chain=preprocessing_chain,
                 )
                 logger.info(f"[src {i}] graph emission: {result.graph}")

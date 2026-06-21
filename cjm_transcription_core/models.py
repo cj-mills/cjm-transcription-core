@@ -19,11 +19,11 @@ from typing import Any, Dict, List, Optional, Union
 @dataclass
 class PipelineConfig:
     """Configuration for one transcription pipeline run."""
-    vad_plugin: str = "cjm-capability-silero-vad"               # VAD capability instance id
-    ffmpeg_plugin: str = "cjm-capability-ffmpeg"                # Convert/segment capability instance id
-    transcriber_plugins: List[str] = field(                       # Transcription capability instance ids (one or more; stage-5 dual-transcriber)
+    vad_capability: str = "cjm-capability-silero-vad"               # VAD capability instance id
+    ffmpeg_capability: str = "cjm-capability-ffmpeg"                # Convert/segment capability instance id
+    transcriber_capabilities: List[str] = field(                       # Transcription capability instance ids (one or more; stage-5 dual-transcriber)
         default_factory=lambda: ["cjm-capability-whisper"])
-    graph_plugin: Optional[str] = None   # Graph-storage capability for Source/AudioSegment/Transcript emission (None = no emission)
+    graph_capability: Optional[str] = None   # Graph-storage capability for Source/AudioSegment/Transcript emission (None = no emission)
     graph_db_path: Optional[str] = None  # Explicit graph DB path override (caller-wins config, C8/F10)
     # Opt-in audio preprocessing (stage 8 — Demucs source separation is the first
     # family). When set, each ~5-min segment is preprocessed BEFORE the model-input
@@ -31,7 +31,7 @@ class PipelineConfig:
     # The slot is FAMILY-AGNOSTIC: it routes through the task channel by
     # (preprocessing_task, preprocessing_method), so a future preprocessing family
     # (e.g. speech-enhancement) drops in by changing those, not the pipeline.
-    preprocessing_plugin: Optional[str] = None        # Preprocessing capability instance id (None = preprocessing OFF)
+    preprocessing_capability: Optional[str] = None        # Preprocessing capability instance id (None = preprocessing OFF)
     preprocessing_task: str = "source_separation"     # Task-channel task for the preprocessing step
     preprocessing_method: str = "separate_vocals"     # Task-channel method for the preprocessing step
     max_segment_duration: float = 220.0  # Wall-clock cap per segment in seconds (pre-emptive cuts). 220 keeps each segment's forced-alignment input clear of qwen3-FA's ~240-250s degeneracy cliff (300 sat AT the cliff -> tail over-assignment; FA over-assignment investigation 2026-06-16; 220 chosen over 240 to absorb the soft-cap silence-gap overshoot)
@@ -103,13 +103,13 @@ class RunManifest:
     so a downstream extender can RECOMPUTE the deterministic AudioRendition node
     id (and the Transcript/Segment ids keyed on it) with no search. Builds on
     0.2.0's per-segment `transcripts` keyed by transcriber + source
-    `content_hash` + per-segment `model_input_hash` + plugin `config_hash`."""
+    `content_hash` + per-segment `model_input_hash` + capability `config_hash`."""
     run_id: str                       # Unique run identifier
     created_at: float                 # Unix timestamp at run start
     config: Dict[str, Any]            # PipelineConfig snapshot
-    plugins: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # instance_id -> {name, version, db_path, config_hash}
+    capabilities: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # instance_id -> {name, version, db_path, config_hash}
     sources: List[SourceResult] = field(default_factory=list)         # Per-source results, input order
-    graph: Optional[Dict[str, Any]] = None  # Emission target: {plugin, db_path} (None = no emission this run)
+    graph: Optional[Dict[str, Any]] = None  # Emission target: {capability, db_path} (None = no emission this run)
 
     FORMAT: str = field(default="cjm-transcription-core/run-manifest", repr=False)  # Manifest format tag
     VERSION: str = field(default="0.3.0", repr=False)                               # Manifest schema version
@@ -122,7 +122,7 @@ class RunManifest:
             "run_id": self.run_id,
             "created_at": self.created_at,
             "config": self.config,
-            "plugins": self.plugins,
+            "capabilities": self.capabilities,
             "sources": [s.to_dict() for s in self.sources],
             "graph": self.graph,
         }

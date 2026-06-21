@@ -14,7 +14,7 @@ per-lane overlap from in-process Job records (started_at/completed_at):
 
 Sources must be COLD (content not in the capability caches) for the
 measurement to be honest — cache hits hide the wall-clock signal (G11).
-Inspect `.cjm/plugin_configs.db` for leftover persisted configs BEFORE any
+Inspect `.cjm/capability_configs.db` for leftover persisted configs BEFORE any
 cold run (the I8 lesson).
 
 As-measured baseline (2026-06-11, RTX 4090, HH1 16.8min + HH2 35min):
@@ -50,7 +50,7 @@ FFMPEG_CAP = 4  # the SG-33 raise under measurement
 def lane_intervals(jobs, instance_id):
     """(start, end) UTC intervals for completed jobs of one instance."""
     return sorted((j.started_at, j.completed_at) for j in jobs
-                  if j.plugin_instance_id == instance_id and j.started_at and j.completed_at)
+                  if j.capability_instance_id == instance_id and j.started_at and j.completed_at)
 
 
 def merge(iv):
@@ -104,10 +104,10 @@ async def main():
         raise SystemExit("usage: measure_cold_parallel_overlap_e2e.py audio1.mp3 [audio2.mp3 ...]")
     SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
     cfg = PipelineConfig(
-        vad_plugin=VAD,
-        ffmpeg_plugin=FFMPEG,
-        transcriber_plugins=TRANSCRIBERS,
-        graph_plugin=GRAPH,
+        vad_capability=VAD,
+        ffmpeg_capability=FFMPEG,
+        transcriber_capabilities=TRANSCRIBERS,
+        graph_capability=GRAPH,
         graph_db_path=SCRATCH_DB,
         max_segment_duration=300.0,
         sample_rate=16000,

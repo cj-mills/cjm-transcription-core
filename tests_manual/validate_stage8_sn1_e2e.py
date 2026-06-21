@@ -116,9 +116,9 @@ def main() -> None:
     run([str(ENVS / "cjm-transcription-core/bin/cjm-transcription-core"),
          "run", str(SN1_SRC),
          "--transcriber", WHISPER,
-         "--graph-plugin", "cjm-capability-graph-sqlite",
+         "--graph-capability", "cjm-capability-graph-sqlite",
          "--graph-db-path", str(SCRATCH_DB),
-         "--sysmon-plugin", "cjm-capability-monitor-nvidia",
+         "--sysmon-capability", "cjm-capability-monitor-nvidia",
          "--actor", ACTOR, "--output", str(TX_OUT), "--yes"],
         cwd=TRANSCRIPTION)
     print(f"   wall {time.monotonic() - t0:.1f}s")
@@ -156,7 +156,7 @@ def main() -> None:
          "run", str(TX_OUT),
          "--text-from", WHISPER,
          "--graph-db-path", str(SCRATCH_DB),
-         "--sysmon-plugin", "cjm-capability-monitor-nvidia",
+         "--sysmon-capability", "cjm-capability-monitor-nvidia",
          "--actor", ACTOR, "--output", str(DECOMP_OUT), "--yes"],
         cwd=DECOMP)
     print(f"   wall {time.monotonic() - t0:.1f}s")

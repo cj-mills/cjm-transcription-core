@@ -38,18 +38,18 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     run.add_argument("--transcriber", action="append", default=None,
                      help="Transcription capability name; REPEATABLE for the dual-transcriber "
                           "(lightweight + accuracy) comparison run (default: cjm-capability-whisper)")
-    run.add_argument("--vad-plugin", default="cjm-capability-silero-vad", help="VAD capability name")
-    run.add_argument("--ffmpeg-plugin", default="cjm-capability-ffmpeg", help="Convert/segment capability name")
-    run.add_argument("--preprocessing-plugin", default=None,
+    run.add_argument("--vad-capability", default="cjm-capability-silero-vad", help="VAD capability name")
+    run.add_argument("--ffmpeg-capability", default="cjm-capability-ffmpeg", help="Convert/segment capability name")
+    run.add_argument("--preprocessing-capability", default=None,
                      help="Opt-in audio-preprocessing capability (e.g. cjm-capability-demucs for vocals "
                           "isolation); runs per-segment on FULL-BAND audio BEFORE the model-input convert, "
                           "via the source_separation task channel (default: no preprocessing)")
-    run.add_argument("--graph-plugin", default=None,
+    run.add_argument("--graph-capability", default=None,
                      help="Graph-storage capability for Source/AudioSegment/Transcript emission "
                           "(CR-18 revolution 2); default: no emission, manifest-only run")
     run.add_argument("--graph-db-path", default=None,
                      help="Explicit graph DB path override (caller-wins config, C8/F10; default: the capability's configured db_path)")
-    run.add_argument("--sysmon-plugin", default=None, help="MonitorPlugin capability for GPU subtree attribution (CR-7); loaded first; default: no monitor")
+    run.add_argument("--sysmon-capability", default=None, help="monitor capability for GPU subtree attribution (CR-7); loaded first; default: no monitor")
     run.add_argument("--max-concurrent", action="append", default=None, metavar="NAME=N",
                      help="Per-capability SG-33 max_concurrent_requests override, REPEATABLE "
                           "(e.g. --max-concurrent cjm-capability-ffmpeg=4); same-worker "
@@ -114,11 +114,11 @@ async def run_command(
     """Execute the `run` subcommand: full pipeline over the given audio files."""
     transcribers = list(args.transcriber or ["cjm-capability-whisper"])
     cfg = PipelineConfig(
-        vad_plugin=args.vad_plugin,
-        ffmpeg_plugin=args.ffmpeg_plugin,
-        transcriber_plugins=transcribers,
-        preprocessing_plugin=args.preprocessing_plugin,
-        graph_plugin=args.graph_plugin,
+        vad_capability=args.vad_capability,
+        ffmpeg_capability=args.ffmpeg_capability,
+        transcriber_capabilities=transcribers,
+        preprocessing_capability=args.preprocessing_capability,
+        graph_capability=args.graph_capability,
         graph_db_path=args.graph_db_path,
         max_segment_duration=args.max_segment_duration,
         sample_rate=args.sample_rate,
@@ -130,31 +130,31 @@ async def run_command(
     missing = [s for s in sources if not Path(s).exists()]
     if missing:
         raise SystemExit(f"missing audio file(s): {missing}")
-    if args.graph_db_path and not args.graph_plugin:
-        raise SystemExit("--graph-db-path requires --graph-plugin")
+    if args.graph_db_path and not args.graph_capability:
+        raise SystemExit("--graph-db-path requires --graph-capability")
     max_concurrent = parse_max_concurrent(args.max_concurrent)
 
-    # CR-7 GPU subtree attribution is opt-in: --sysmon-plugin threads the monitor
+    # CR-7 GPU subtree attribution is opt-in: --sysmon-capability threads the monitor
     # name into BOTH the manager (load-time empirical records) and the queue
     # (per-job resource samples); the monitor loads FIRST so GPU capabilities'
     # samples record gpu_memory_mb_peak (voxtral-vllm e2e pattern).
     manager = CapabilityManager(
         search_paths=[Path(args.manifests_dir)],
-        sysmon_capability_name=args.sysmon_plugin,
+        sysmon_capability_name=args.sysmon_capability,
     )
     # Preprocessing (opt-in) loads alongside the other compute capabilities; its
     # adapter auto-binds by surface match exactly like VAD/transcription.
-    instance_ids = ([cfg.ffmpeg_plugin, cfg.vad_plugin]
-                    + ([cfg.preprocessing_plugin] if cfg.preprocessing_plugin else [])
-                    + list(cfg.transcriber_plugins)
-                    + ([cfg.graph_plugin] if cfg.graph_plugin else []))
-    load_order = ([args.sysmon_plugin] if args.sysmon_plugin else []) + instance_ids
+    instance_ids = ([cfg.ffmpeg_capability, cfg.vad_capability]
+                    + ([cfg.preprocessing_capability] if cfg.preprocessing_capability else [])
+                    + list(cfg.transcriber_capabilities)
+                    + ([cfg.graph_capability] if cfg.graph_capability else []))
+    load_order = ([args.sysmon_capability] if args.sysmon_capability else []) + instance_ids
     # --graph-db-path threads a caller-wins config into the graph load (C8/F10).
-    configs = ({cfg.graph_plugin: {"db_path": args.graph_db_path}}
-               if (cfg.graph_plugin and args.graph_db_path) else None)
+    configs = ({cfg.graph_capability: {"db_path": args.graph_db_path}}
+               if (cfg.graph_capability and args.graph_db_path) else None)
     load_capabilities(manager, load_order, configs=configs, max_concurrent=max_concurrent)
 
-    queue = JobQueue(deps=manager, sysmon_capability_name=args.sysmon_plugin)
+    queue = JobQueue(deps=manager, sysmon_capability_name=args.sysmon_capability)
     await queue.start()
     try:
         # CR-14 follow-up: actor attribution (operator identity by default;
@@ -174,9 +174,9 @@ async def run_command(
     done = sum(len(s.segments) for s in manifest.sources)
     print(f"run manifest: {out}")
     print(f"sources completed: {len(manifest.sources)}/{len(sources)}  segments: {done}  transcribers: {len(transcribers)}")
-    if cfg.preprocessing_plugin:
-        print(f"preprocessing: {cfg.preprocessing_plugin} ({cfg.preprocessing_task}/{cfg.preprocessing_method})")
-    if cfg.graph_plugin:
+    if cfg.preprocessing_capability:
+        print(f"preprocessing: {cfg.preprocessing_capability} ({cfg.preprocessing_task}/{cfg.preprocessing_method})")
+    if cfg.graph_capability:
         for s in manifest.sources:
             print(f"graph emission [{Path(s.source_path).name}]: {s.graph}")
     return 0 if len(manifest.sources) == len(sources) else 1
