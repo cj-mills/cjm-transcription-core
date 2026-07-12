@@ -1,9 +1,0 @@
-project:
-  output-dir: _docs
-
-website:
-  title: "cjm-transcription-core"
-  site-url: "https://cj-mills.github.io/cjm-transcription-core"
-  description: "A frontend-agnostic core for the audio transcription workflow — composes isolated capability workers (audio conversion, VAD segmentation, batch transcription, persistence) into a headless pipeline, with a CLI as its first driver."
-  repo-branch: main
-  repo-url: "https://github.com/cj-mills/cjm-transcription-core"
