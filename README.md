@@ -7,14 +7,10 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 ## Modules
 
 - **`cjm_transcription_core.boundaries`** — Wall-clock-aware segment boundary computation: group VAD speech chunks into segments cut at silence-gap midpoints. Pure logic — no capability calls. Final home of the algorithm originally validated in cjm-transcription-audio-segment's AudioSegmentService.compute_segment_boundaries (that library is retired to cj-mills_deferred/).
-- **`cjm_transcription_core.cli`** — The CLI driver — the workflow core's first (and currently only) frontend. Ships in-package as the cjm-transcription-core console script so the driver can never skew from the core. GUI presentation drivers come later and consume the same pipeline module; they never reimplement it (CLI-first / headless-core principle).
+- **`cjm_transcription_core.cli`** — The CLI driver — the workflow core's first (and currently only) frontend.
 - **`cjm_transcription_core.emission`** — Graph-root emission (CR-18 revolution 2): a completed source EMITS Source -> AudioSegment -> Transcript into the shared context graph — the graph BEGINS at transcription (where-graph-begins resolution: ingestion is the first EXTENDER that plants the root). Deterministic identity tuples make emission idempotent: re-runs (cache hits included) collide into verified no-ops instead of duplicating roots (the E13 hazard, relocated into graph creation and discharged).
 - **`cjm_transcription_core.models`** — Data shapes for the transcription pipeline: run configuration + the run-manifest result containers. The run manifest is the pipeline's durable output record: which sources were processed, how they were segmented, and where each segment's transcription landed (capability data DBs remain the authoritative text store; the manifest records the run's shape + provenance pointers). It is a deliberate proto-bundle — the CR-20 provenance-bundle infrastructure is expected to absorb/replace it.
 - **`cjm_transcription_core.pipeline`** — The headless transcription pipeline: VAD analysis -> boundary computation -> segment cutting -> per-segment model-input conversion -> transcription, composed over capability workers via the substrate's JobQueue. Between-stage outputs are threaded manually (run job -> read result -> submit next); the per-segment fan-out rides a CR-16 ports Composition with OutputRef bindings (this module was the real-world consumer of the original submit_sequence piping gap — pass-2 evidence in claude-docs/pass-2-evidence.md). HITL approval seams use the cheapest viable form (log + optional CLI prompt) per the cores-cluster guard-rails; each seam carries its 5-field HITL-assist annotation in its docstring.
-- **`tests_manual.measure_cold_parallel_overlap_e2e`** — Cold-run parallel-overlap measurement (stage-5 closeout; the carried G11
-- **`tests_manual.validate_oom_backstop_e2e`** — OOM backstop stress test (stage-3 ledger): Voxtral-Small-24B on a 24GB GPU.
-- **`tests_manual.validate_stage8_sn1_both_transcribers_e2e`** — Stage-8 SN-I BOTH-TRANSCRIBER parity — the voxtral Option-C migration (build step 2).
-- **`tests_manual.validate_stage8_sn1_e2e`** — Stage-8 SN-I closeout — the whisper Option-C migration validated at scale.
 
 ## API
 
@@ -60,35 +56,6 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `tier1_segment_checks` _function_ — Tier-1 deterministic pre-filters for the boundary-review seam (no AI).
 - `tier1_transcript_checks` _function_ — Tier-1 deterministic pre-filters for the transcript-review seam (no AI).
 
-### `tests_manual.measure_cold_parallel_overlap_e2e`
-
-- `lane_intervals` _function_ — (start, end) UTC intervals for completed jobs of one instance.
-- `main` _function_
-- `merge` _function_ — Merge overlapping intervals so a side can't double-count itself.
-- `overlap_seconds` _function_ — Total seconds where any interval of A overlaps any interval of B.
-- `self_overlap_max` _function_ — Max simultaneously in-flight jobs within one lane + seconds at depth >= 2.
-
-### `tests_manual.validate_oom_backstop_e2e`
-
-- `empirical_rows` _function_
-- `main` _function_
-- `pipe_composition` _function_
-
-### `tests_manual.validate_stage8_sn1_both_transcribers_e2e`
-
-- `check_discovery` _function_ — Milestone 1: {whisper, voxtral} compatible set, manifest-surface-based.
-- `journal_max_seq` _function_
-- `journal_rows` _function_
-- `main` _function_
-- `run` _function_
-
-### `tests_manual.validate_stage8_sn1_e2e`
-
-- `journal_max_seq` _function_
-- `journal_rows` _function_
-- `main` _function_
-- `run` _function_
-
 ## Dependencies
 
-**Depends on:** `cjm-substrate`
+**Depends on:** `cjm-capability-primitives`, `cjm-context-graph-layer`, `cjm-context-graph-primitives`, `cjm-substrate`, `cjm-transcript-graph-schema`, `cjm-transcription-adapter-interface`

@@ -10,6 +10,7 @@ from cjm_capability_primitives.media_processing import (MediaArtifactResult, Med
 from cjm_capability_primitives.source_separation import SourceSeparationResult
 from cjm_capability_primitives.transcription import TranscriptionResult
 from cjm_capability_primitives.vad import VADResult
+from cjm_context_graph_layer.journal import sidecar_journal_path
 from cjm_substrate.core.empirical_store import compute_config_hash
 from cjm_substrate.core.journal_store import JournalEvent, SubstrateEventType
 from cjm_substrate.core.manager import CapabilityManager
@@ -528,6 +529,11 @@ async def run_pipeline(
             "capability": cfg.graph_capability,
             "db_path": (manifest.capabilities.get(cfg.graph_capability) or {}).get("db_path"),
         }
+    # Pipeline writes append through to the graph db's SIDECAR journal (DEC ccbab9f5 /
+    # finding 4219da27): unjournaled ingestion would erode db-rebuildability.
+    graph_journal_path = (sidecar_journal_path(manifest.graph["db_path"])
+                          if cfg.graph_capability and (manifest.graph or {}).get("db_path")
+                          else None)
     transcriber_config_hashes = {
         t: str((manifest.capabilities.get(t) or {}).get("config_hash") or "")
         for t in cfg.transcriber_capabilities
@@ -555,7 +561,7 @@ async def run_pipeline(
             if cfg.graph_capability:
                 result.graph = await emit_source_graph(
                     queue, cfg.graph_capability, result, transcriber_config_hashes, run_id,
-                    chain=preprocessing_chain,
+                    chain=preprocessing_chain, journal_path=graph_journal_path,
                 )
                 logger.info(f"[src {i}] graph emission: {result.graph}")
             manifest.sources.append(result)

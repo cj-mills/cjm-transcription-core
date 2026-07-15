@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_context_graph_layer.declare import Derivation, derivation_to_graph
 from cjm_context_graph_layer.grammar import spine_edges
-from cjm_context_graph_layer.ops import extend_graph
+from cjm_context_graph_layer.journal import journal_extend
 from cjm_substrate.core.queue import JobQueue
 from cjm_transcript_graph_schema.schema import (AudioRenditionNode, AudioSegmentNode, SourceNode,
                                                 TranscriptNode)
@@ -89,6 +89,7 @@ async def emit_source_graph(
     transcriber_config_hashes: Dict[str, str],  # transcriber -> effective config hash
     run_id: str,                                # Run id (recorded on the boundary Derivation event)
     chain: Optional[List[str]] = None,          # Preprocessing chain that produced the model-inputs ([]/None = raw)
+    journal_path: Optional[str] = None,         # Sidecar write journal — DELTA ops append on success (None = unjournaled)
 ) -> Dict[str, Any]:  # Emission record for the manifest
     """Idempotently emit one source's graph root through the task channel.
 
@@ -105,7 +106,10 @@ async def emit_source_graph(
     """
     chain = list(chain or [])
     nodes, edges, ids = build_source_emission(src, transcriber_config_hashes, chain=chain)
-    res = await extend_graph(queue, graph_id, nodes, edges)
+    res = await journal_extend(queue, graph_id, nodes, edges,
+                               journal_path=journal_path, verb="source-emission",
+                               actor="pipeline:cjm-transcription-core", run=run_id,
+                               args={"source_id": ids["source"], "chain": chain})
     added = set(res.added_node_ids)
     new_asegs = [a for a in ids["audio_segments"] if a in added]
     new_renditions = [r for r in ids["renditions"] if r in added]
@@ -121,7 +125,10 @@ async def emit_source_graph(
             properties=props,
         )
         dn, de = derivation_to_graph(d)
-        await extend_graph(queue, graph_id, [dn], de)
+        await journal_extend(queue, graph_id, [dn], de,
+                             journal_path=journal_path, verb="derivation",
+                             actor="pipeline:cjm-transcription-core", run=run_id,
+                             args={"method": method})
     record = {
         "source_node_id": ids["source"],
         "nodes_added": res.nodes_added,
