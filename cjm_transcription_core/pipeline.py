@@ -445,6 +445,13 @@ def collect_capability_info(
     for iid in instance_ids:
         meta = (getattr(manager, "capabilities", {}) or {}).get(iid)
         if meta is None:
+            # CR-10 multi-instance: a named (capability, MODEL) instance lives in
+            # manager.instances only — resolve the underlying capability's meta so
+            # provenance never silently drops a non-default transcriber (db200725).
+            inst = (getattr(manager, "instances", {}) or {}).get(iid)
+            if inst is not None:
+                meta = (getattr(manager, "capabilities", {}) or {}).get(inst.capability_name)
+        if meta is None:
             continue
         manifest = getattr(meta, "manifest", {}) or {}
         current_config: Dict[str, Any] = {}

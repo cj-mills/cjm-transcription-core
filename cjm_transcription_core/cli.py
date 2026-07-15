@@ -47,11 +47,16 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run", help="Run the pipeline over one or more audio files")
-    run.add_argument("audio", nargs="+", help="Source audio file path(s), in order")
+    run.add_argument("audio", nargs="+",
+                     help="Source audio/video file path(s) and/or directories, in order; "
+                          "a directory expands to every media file under it (recursive, sorted)")
     run.add_argument("--manifests-dir", default=".cjm/manifests", help="Capability manifests directory")
     run.add_argument("--transcriber", action="append", default=None,
-                     help="Transcription capability name; REPEATABLE for the dual-transcriber "
-                          "(lightweight + accuracy) comparison run (default: cjm-capability-whisper)")
+                     help="Transcriber spec NAME[@INSTANCE_ID][:key=value,...]; REPEATABLE for the "
+                          "dual-transcriber (lightweight + accuracy) comparison run. @INSTANCE_ID + "
+                          "config overrides stand up several (capability, MODEL) instances of ONE "
+                          "capability side by side (e.g. cjm-capability-whisper@whisper-tiny:model=tiny) "
+                          "(default: cjm-capability-whisper)")
     run.add_argument("--vad-capability", default="cjm-capability-silero-vad", help="VAD capability name")
     run.add_argument("--ffmpeg-capability", default="cjm-capability-ffmpeg", help="Convert/segment capability name")
     run.add_argument("--preprocessing-capability", default=None,
@@ -102,31 +107,45 @@ def parse_max_concurrent(
 
 def load_capabilities(
     manager: CapabilityManager,   # Freshly constructed manager
-    instance_ids: List[str],  # Capability names to load (default instances)
+    instance_ids: List[Any],  # Capability names (default instances) and/or parse_transcriber_spec load directives
     configs: Optional[Dict[str, Dict[str, Any]]] = None,  # Per-capability config overrides (caller-wins, C8)
-    max_concurrent: Optional[Dict[str, int]] = None,  # Per-capability SG-33 max_concurrent_requests (unset = queue default of 1)
+    max_concurrent: Optional[Dict[str, int]] = None,  # Per-instance SG-33 max_concurrent_requests (unset = queue default of 1)
 ) -> None:
-    """Discover manifests + load each requested capability (default instance)."""
+    """Discover manifests + load each requested capability.
+
+    A plain-string item loads the DEFAULT instance (name = instance id, stage-5
+    behavior). A dict directive ({"capability", "instance_id", "config"} — the
+    parse_transcriber_spec shape) loads a CR-10 NAMED instance so one capability
+    can host several (capability, MODEL) instances side by side (db200725).
+    """
     manager.discover_manifests()
     discovered = {m.name: m for m in manager.discovered}
-    for iid in instance_ids:
-        meta = discovered.get(iid)
+    for item in instance_ids:
+        directive = item if isinstance(item, dict) else {"capability": item, "instance_id": item, "config": {}}
+        name = directive["capability"]
+        iid = directive["instance_id"]
+        meta = discovered.get(name)
         if meta is None:
             raise SystemExit(
-                f"capability {iid!r} not found in manifests "
+                f"capability {name!r} not found in manifests "
                 f"(discovered: {sorted(discovered)}) — run cjm-ctl install-all first"
             )
-        if not manager.load_capability(meta, config=(configs or {}).get(iid),
+        config = directive["config"] or (configs or {}).get(iid)
+        if not manager.load_capability(meta, config=config,
+                                   instance_id=(iid if iid != name else None),
                                    max_concurrent_requests=(max_concurrent or {}).get(iid)):
             raise SystemExit(f"failed to load capability {iid!r}")
-        logger.info(f"loaded {iid}")
+        logger.info(f"loaded {iid}" + (f" ({name})" if iid != name else ""))
 
 
 async def run_command(
     args: argparse.Namespace,  # Parsed CLI arguments for the `run` subcommand
 ) -> int:  # Process exit code (0 = all sources completed)
     """Execute the `run` subcommand: full pipeline over the given audio files."""
-    transcribers = list(args.transcriber or ["cjm-capability-whisper"])
+    specs = [parse_transcriber_spec(s) for s in (args.transcriber or ["cjm-capability-whisper"])]
+    transcribers = [s["instance_id"] for s in specs]
+    if len(set(transcribers)) != len(transcribers):
+        raise SystemExit(f"duplicate transcriber instance ids: {transcribers}")
     cfg = PipelineConfig(
         vad_capability=args.vad_capability,
         ffmpeg_capability=args.ffmpeg_capability,
@@ -140,10 +159,7 @@ async def run_command(
         force=args.force,
         assume_yes=args.yes,
     )
-    sources = [str(Path(p).resolve()) for p in args.audio]
-    missing = [s for s in sources if not Path(s).exists()]
-    if missing:
-        raise SystemExit(f"missing audio file(s): {missing}")
+    sources = expand_sources(args.audio)
     if args.graph_db_path and not args.graph_capability:
         raise SystemExit("--graph-db-path requires --graph-capability")
     max_concurrent = parse_max_concurrent(args.max_concurrent)
@@ -160,9 +176,11 @@ async def run_command(
     # adapter auto-binds by surface match exactly like VAD/transcription.
     instance_ids = ([cfg.ffmpeg_capability, cfg.vad_capability]
                     + ([cfg.preprocessing_capability] if cfg.preprocessing_capability else [])
-                    + list(cfg.transcriber_capabilities)
+                    + list(specs)
                     + ([cfg.graph_capability] if cfg.graph_capability else []))
     load_order = ([args.sysmon_capability] if args.sysmon_capability else []) + instance_ids
+    # Teardown iterates INSTANCE IDS (a spec directive loads under its instance_id).
+    loaded_ids = [i["instance_id"] if isinstance(i, dict) else i for i in load_order]
     # --graph-db-path threads a caller-wins config into the graph load (C8/F10).
     configs = ({cfg.graph_capability: {"db_path": args.graph_db_path}}
                if (cfg.graph_capability and args.graph_db_path) else None)
@@ -177,7 +195,7 @@ async def run_command(
         manifest = await run_pipeline(manager, queue, cfg, sources, actor=actor)
     finally:
         await queue.stop()
-        for iid in reversed(load_order):  # Reverse load order; the monitor unloads last
+        for iid in reversed(loaded_ids):  # Reverse load order; the monitor unloads last
             try:
                 manager.unload_capability(iid)
             except Exception as e:  # Best-effort teardown; never mask the run's outcome
@@ -208,3 +226,87 @@ def main(
     if args.command == "run":
         return asyncio.run(run_command(args))
     raise SystemExit(f"unknown command: {args.command}")
+
+
+def parse_transcriber_spec(
+    spec: str,  # One --transcriber value: NAME[@INSTANCE_ID][:key=value,...]
+) -> Dict[str, Any]:  # Load directive: {"capability", "instance_id", "config"}
+    """Parse one `--transcriber` spec into a (capability, MODEL)-instance load directive.
+
+    Grammar: `NAME[@INSTANCE_ID][:key=value[,key=value...]]`. A bare NAME keeps
+    the stage-5 behavior (default instance, manifest-default config). `@INSTANCE_ID`
+    names a CR-10 multi-instance load so ONE capability can host several
+    (capability, MODEL) instances side by side (db200725: the whisper family /
+    voxtral mini-vs-small); config overrides REQUIRE it — every non-default
+    config gets its own addressable instance id. Values coerce to bool/int/float
+    when they read as one, else stay strings — the manifest config_schema is the
+    real validator at load time (SG-5 strict).
+    """
+    head, colon, cfg_part = spec.partition(":")
+    name, at, instance_id = head.partition("@")
+    if not name:
+        raise SystemExit(f"--transcriber expects NAME[@INSTANCE_ID][:key=value,...], got {spec!r}")
+    if at and not instance_id:
+        raise SystemExit(f"--transcriber has a dangling '@' (empty instance id): {spec!r}")
+    if not at:
+        instance_id = name
+    config: Dict[str, Any] = {}
+    if colon:
+        if not at:
+            raise SystemExit(
+                f"--transcriber config overrides require an explicit @INSTANCE_ID "
+                f"(a non-default config needs its own addressable instance): {spec!r}")
+        for pair in cfg_part.split(","):
+            key, eq, value = pair.partition("=")
+            if not eq or not key or not value:
+                raise SystemExit(f"--transcriber config expects key=value, got {pair!r} in {spec!r}")
+            if value in ("true", "false"):
+                config[key] = (value == "true")
+            else:
+                try:
+                    config[key] = int(value)
+                except ValueError:
+                    try:
+                        config[key] = float(value)
+                    except ValueError:
+                        config[key] = value
+    return {"capability": name, "instance_id": instance_id, "config": config}
+
+
+def expand_sources(
+    paths: List[str],  # CLI `audio` values: media file paths and/or directories, in order
+) -> List[str]:  # Resolved media file paths (files verbatim; directories expanded recursively, sorted)
+    """Expand CLI source arguments into the ordered media-file list for a run.
+
+    Files pass through untouched (any extension — the caller asked for them by
+    name); a DIRECTORY expands to every media file under it, recursively, in
+    sorted-path order so folder runs stay deterministic (TUI-v0 headless slice
+    be4627c7: a feedstock folder lands as one CLI arg instead of a hand-typed
+    file list). Missing paths and directories with no media files refuse loudly.
+    """
+    out: List[str] = []
+    missing: List[str] = []
+    for p in paths:
+        path = Path(p).resolve()
+        if path.is_dir():
+            found = sorted(str(f) for f in path.rglob("*")
+                           if f.is_file() and f.suffix.lower() in MEDIA_SUFFIXES)
+            if not found:
+                raise SystemExit(f"no media files under directory: {path}")
+            out.extend(found)
+        elif path.exists():
+            out.append(str(path))
+        else:
+            missing.append(str(path))
+    if missing:
+        raise SystemExit(f"missing audio file(s): {missing}")
+    return out
+
+
+# Media suffixes a DIRECTORY source expands to (explicit files pass through
+# regardless — the caller asked for those by name). Shared vocabulary: the
+# transcription TUI's source browser filters its listing with the same set.
+MEDIA_SUFFIXES = {
+    ".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".wma",
+    ".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm",
+}

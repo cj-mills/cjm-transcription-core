@@ -12,6 +12,7 @@ from cjm_substrate.core.ports import NodeState, OutputRef, new_composition_run
 from cjm_transcription_core.models import SegmentRecord
 from cjm_transcription_core.pipeline import (
     build_segment_composition,
+    collect_capability_info,
     confirm_seam,
     normalize_vad_result,
     records_from_composition,
@@ -145,3 +146,48 @@ def test_preprocessing_composition():
     compd, metasd = build_segment_composition(RAW_SEGMENTS, "runD", 0, "ffmpeg", ["whisper"])
     assert compd.nodes[0].kwargs["input_path"] == "/seg0.flac"  # convert reads raw seg directly
     assert metasd[0]["separate_node"] is None
+
+
+def test_collect_capability_info_multi_instance():
+    # CR-10 named (capability, MODEL) instances live in manager.instances only —
+    # provenance must resolve them through instance.capability_name instead of
+    # silently dropping the transcriber from the run manifest (db200725).
+    class _Meta:
+        def __init__(self, name):
+            self.name = name
+            self.version = "1.2.3"
+            self.manifest = {"db_path": None}
+
+    class _Proxy:
+        def __init__(self, config):
+            self._config = config
+
+        def get_current_config(self):
+            return self._config
+
+    class _Inst:
+        def __init__(self, capability_name, proxy):
+            self.capability_name = capability_name
+            self.proxy = proxy
+
+    class _Manager:
+        def __init__(self):
+            tiny = _Proxy({"model": "tiny"})
+            large = _Proxy({"model": "large-v3"})
+            self.capabilities = {"cjm-capability-whisper": _Meta("cjm-capability-whisper")}
+            self.instances = {
+                "cjm-capability-whisper": _Inst("cjm-capability-whisper", tiny),
+                "whisper-large": _Inst("cjm-capability-whisper", large),
+            }
+
+        def get_capability(self, name_or_id):
+            return self.instances[name_or_id].proxy
+
+    info = collect_capability_info(_Manager(), ["cjm-capability-whisper", "whisper-large", "ghost"])
+    # both instances recorded under their INSTANCE ids, named one resolves the meta
+    assert set(info) == {"cjm-capability-whisper", "whisper-large"}
+    assert info["whisper-large"]["name"] == "cjm-capability-whisper"
+    assert info["whisper-large"]["config"] == {"model": "large-v3"}
+    assert info["cjm-capability-whisper"]["config"] == {"model": "tiny"}
+    # distinct effective configs hash distinctly (Transcript identity input)
+    assert info["whisper-large"]["config_hash"] != info["cjm-capability-whisper"]["config_hash"]

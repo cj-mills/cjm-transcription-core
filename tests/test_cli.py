@@ -3,7 +3,8 @@
 Projected from the cli notebook's parser-check cell at the golden-reference flip."""
 import pytest
 
-from cjm_transcription_core.cli import build_parser, parse_max_concurrent
+from cjm_transcription_core.cli import (build_parser, expand_sources, parse_max_concurrent,
+                                         parse_transcriber_spec)
 
 
 def test_run_defaults_and_opt_ins():
@@ -58,3 +59,57 @@ def test_max_concurrent_refuses_loudly(bad):
     # malformed / non-int / below-1 all refuse loudly
     with pytest.raises(SystemExit):
         parse_max_concurrent([bad])
+
+
+def test_transcriber_spec_parsing():
+    # bare name = default instance (stage-5 behavior, backward compatible)
+    assert parse_transcriber_spec("cjm-capability-whisper") == {
+        "capability": "cjm-capability-whisper",
+        "instance_id": "cjm-capability-whisper", "config": {}}
+    # @INSTANCE_ID + config overrides = CR-10 named (capability, MODEL) instance
+    assert parse_transcriber_spec("cjm-capability-whisper@whisper-tiny:model=tiny") == {
+        "capability": "cjm-capability-whisper",
+        "instance_id": "whisper-tiny", "config": {"model": "tiny"}}
+    # value coercion: string (incl. a '/'-bearing HF model id) / bool / float / int
+    assert parse_transcriber_spec(
+        "cjm-capability-voxtral-hf@voxtral-small:model_id=mistralai/Voxtral-Small-24B-2507,"
+        "do_sample=true,temperature=0.7,max_new_tokens=100")["config"] == {
+        "model_id": "mistralai/Voxtral-Small-24B-2507", "do_sample": True,
+        "temperature": 0.7, "max_new_tokens": 100}
+
+
+@pytest.mark.parametrize("bad", [
+    "", "@x", "name@",            # empty / nameless / dangling '@'
+    "name:model=tiny",            # config override without an addressable @INSTANCE_ID
+    "name@i:model", "name@i:=v", "name@i:k=",  # malformed key=value pairs
+])
+def test_transcriber_spec_refuses_loudly(bad):
+    with pytest.raises(SystemExit):
+        parse_transcriber_spec(bad)
+
+
+def test_expand_sources_files_and_folders(tmp_path):
+    d = tmp_path / "feed"
+    (d / "sub").mkdir(parents=True)
+    (d / "b.mp3").write_bytes(b"x")
+    (d / "sub" / "a.wav").write_bytes(b"x")
+    (d / "notes.txt").write_bytes(b"x")  # non-media: skipped by directory expansion
+    lone = tmp_path / "lone.opus"
+    lone.write_bytes(b"x")
+    out = expand_sources([str(lone), str(d)])
+    # explicit files pass through first (caller order), then the folder's media
+    # files in sorted-path order (deterministic feedstock runs)
+    assert out == [str(lone.resolve()),
+                   str((d / "b.mp3").resolve()),
+                   str((d / "sub" / "a.wav").resolve())]
+
+
+def test_expand_sources_refuses_loudly(tmp_path):
+    # a missing explicit file refuses (same contract the inline check had)
+    with pytest.raises(SystemExit):
+        expand_sources([str(tmp_path / "missing.mp3")])
+    # a directory with no media files refuses instead of silently running nothing
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(SystemExit):
+        expand_sources([str(empty)])
