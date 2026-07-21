@@ -150,6 +150,35 @@ capabilities:
         impl: "cjm_transcription_adapter_interface.generic:GenericTranscriptionAdapter"
 
   # ----------------------------------------------------------------
+  # AI Worker: Qwen3 Forced Aligner (Qwen3-ForcedAligner-0.6B)
+  # Word-level audio-text alignment per ~5-minute pipeline segment
+  # (300s is the model's recommended upper limit for optimal performance).
+  # GPU; model downloads on first run.
+  # 14b5b05a: consolidated into the WORKSPACE capabilities config — the
+  # decomp stages resolve manifests from the workspace manifests dir, so
+  # the workspace carries the UNION of pipeline capabilities.
+  # ----------------------------------------------------------------
+  - name: qwen3-forced-aligner
+    env_name: test-qwen3-fa
+
+    # Environment File (System Deps)
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-qwen3-forced-aligner/environment.yml"
+
+    # The Capability Package (local source)
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-qwen3-forced-aligner/"
+
+    # Interface Libraries (schema v2: substrate AUTO-INJECTED; the tool depends
+    # only on the result data noun, not the old forced-alignment domain interface lib)
+    interface_libs:
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-primitives/"
+
+    # Adapter impls this worker env carries (the generic FA adapter; auto-binds
+    # to qwen3-forced-aligner via surface match: align + get_current_config)
+    adapters:
+      - lib: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-forced-alignment-adapter-interface/"
+        impl: "cjm_forced_alignment_adapter_interface.generic:GenericForcedAlignmentAdapter"
+
+  # ----------------------------------------------------------------
   # Context Graph: SQLite Graph
   # Stage 5 (CR-18 revolution 2): transcription EMITS the graph root
   # (Source -> AudioSegment -> Transcript) through this capability's
