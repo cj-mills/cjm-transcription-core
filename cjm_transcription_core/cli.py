@@ -27,11 +27,13 @@ import argparse
 import asyncio
 import getpass
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from cjm_substrate.core.manager import CapabilityManager
 from cjm_substrate.core.queue import JobQueue
+from cjm_substrate.core.workspace import resolve_workspace
 from cjm_transcription_core.models import PipelineConfig
 from cjm_transcription_core.pipeline import run_pipeline
 
@@ -79,7 +81,11 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     run.add_argument("--channels", type=int, default=1, help="Model-input channel count")
     run.add_argument("--force", action="store_true", help="Bypass capability-side caches (VAD + transcription + preprocessing)")
     run.add_argument("-y", "--yes", action="store_true", help="Auto-accept HITL seams (headless mode)")
-    run.add_argument("--output", default=None, help="Run-manifest output path (default: runs/<run_id>.json)")
+    run.add_argument("--output", default=None, help="Run-manifest output path (default: <workspace>/runs/<run_id>.json when a workspace is active, else runs/<run_id>.json under the cwd)")
+    run.add_argument("--workspace", default=None,
+                     help="Workspace root (5daadfc4; default: CJM_WORKSPACE env, else upward walk "
+                          "from cwd). Supplies the runs/ output default and is exported so "
+                          "substrate config + capability workers resolve workspace-scoped paths")
     run.add_argument("--actor", default=None,
                      help="Journal attribution for who/what initiated this run (default: cli:<username>)")
     run.add_argument("-v", "--verbose", action="store_true", help="DEBUG-level logging")
@@ -142,6 +148,13 @@ async def run_command(
     args: argparse.Namespace,  # Parsed CLI arguments for the `run` subcommand
 ) -> int:  # Process exit code (0 = all sources completed)
     """Execute the `run` subcommand: full pipeline over the given audio files."""
+    # 5daadfc4 workspace: resolve BEFORE any substrate config loads. Exporting
+    # CJM_WORKSPACE makes the whole process tree (substrate config, capability
+    # workers via CJM_CAPABILITY_DATA_DIR injection) workspace-scoped; the flag
+    # form keeps the printed hand-off command reproducible standalone.
+    ws = resolve_workspace(explicit=getattr(args, "workspace", None))
+    if ws is not None:
+        os.environ["CJM_WORKSPACE"] = str(ws.root)
     specs = [parse_transcriber_spec(s) for s in (args.transcriber or ["cjm-capability-whisper"])]
     transcribers = [s["instance_id"] for s in specs]
     if len(set(transcribers)) != len(transcribers):
@@ -201,8 +214,9 @@ async def run_command(
             except Exception as e:  # Best-effort teardown; never mask the run's outcome
                 logger.warning(f"unload {iid} failed: {e}")
 
-    out = Path(args.output) if args.output else Path("runs") / f"{manifest.run_id}.json"
-    manifest.save(out)
+    out = (Path(args.output) if args.output
+           else (ws.runs_dir if ws is not None else Path("runs")) / f"{manifest.run_id}.json")
+    manifest.save(out, workspace=ws)
     done = sum(len(s.segments) for s in manifest.sources)
     print(f"run manifest: {out}")
     print(f"sources completed: {len(manifest.sources)}/{len(sources)}  segments: {done}  transcribers: {len(transcribers)}")
