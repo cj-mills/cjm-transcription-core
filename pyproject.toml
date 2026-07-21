@@ -22,6 +22,9 @@ Repository = "https://github.com/cj-mills/cjm-transcription-core"
 [project.scripts]
 cjm-transcription-core = "cjm_transcription_core.cli:main"
 
+[project.entry-points."cjm_context_graph_layer.replay"]
+transcription = "cjm_transcription_core.emission:transcription_replay_handlers"
+
 [tool.setuptools.dynamic]
 version = {attr = "cjm_transcription_core.__version__"}
 

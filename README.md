@@ -21,15 +21,18 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 ### `cjm_transcription_core.cli`
 
 - `build_parser` _function_ — Build the CLI parser (subcommands: run).
-- `load_capabilities` _function_ — Discover manifests + load each requested capability (default instance).
+- `expand_sources` _function_ — Expand CLI source arguments into the ordered media-file list for a run.
+- `load_capabilities` _function_ — Discover manifests + load each requested capability.
 - `main` _function_ — CLI entry point (console script: `cjm-transcription-core`).
 - `parse_max_concurrent` _function_ — Parse repeatable `--max-concurrent NAME=N` values into a per-capability cap map.
+- `parse_transcriber_spec` _function_ — Parse one `--transcriber` spec into a (capability, MODEL)-instance load directive.
 - `run_command` _function_ — Execute the `run` subcommand: full pipeline over the given audio files.
 
 ### `cjm_transcription_core.emission`
 
 - `build_source_emission` _function_ — Build the graph-root payload for one source (pure; no capability calls).
 - `emit_source_graph` _function_ — Idempotently emit one source's graph root through the task channel.
+- `transcription_replay_handlers` _function_ — The transcription core's replay vocabulary (DEC 426658f1, replay stays DOMAIN-OWNED).
 
 ### `cjm_transcription_core.models`
 
@@ -59,3 +62,4 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 ## Dependencies
 
 **Depends on:** `cjm-capability-primitives`, `cjm-context-graph-layer`, `cjm-context-graph-primitives`, `cjm-substrate`, `cjm-transcript-graph-schema`, `cjm-transcription-adapter-interface`
+**Used by:** `cjm-transcription-tui`

@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_context_graph_layer.declare import Derivation, derivation_to_graph
 from cjm_context_graph_layer.grammar import spine_edges
-from cjm_context_graph_layer.journal import journal_extend
+from cjm_context_graph_layer.journal import journal_extend, wires_handlers
 from cjm_substrate.core.queue import JobQueue
 from cjm_transcript_graph_schema.schema import (AudioRenditionNode, AudioSegmentNode, SourceNode,
                                                 TranscriptNode)
@@ -138,3 +138,14 @@ async def emit_source_graph(
     }
     logger.info(f"emitted {src.source_path}: {record}")
     return record
+
+
+def transcription_replay_handlers() -> Dict[str, Any]:  # verb -> async handler(queue, graph_id, op)
+    """The transcription core's replay vocabulary (DEC 426658f1, replay stays DOMAIN-OWNED).
+
+    Exported through the `cjm_context_graph_layer.replay` entry-point group and
+    unioned by `composed_replay_handlers`. Both verbs are `journal_extend` ops —
+    wire-carrying by construction — so they register the layer's shared
+    `apply_wires` (identity-comparable across cores: decomp also emits
+    `derivation`, and the shared handler keeps that collision legal)."""
+    return wires_handlers("source-emission", "derivation")
