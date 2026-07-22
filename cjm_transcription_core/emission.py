@@ -10,6 +10,7 @@ from cjm_substrate.core.queue import JobQueue
 from cjm_transcript_graph_schema.schema import (AudioRenditionNode, AudioSegmentNode,
                                                 collection_edges, CollectionNode, SourceNode,
                                                 TranscriptNode)
+from cjm_transcription_core.curation import curation_replay_handlers
 from cjm_transcription_core.models import CollectionDecl, SourceResult
 
 logger = logging.getLogger(__name__)
@@ -149,8 +150,12 @@ def transcription_replay_handlers() -> Dict[str, Any]:  # verb -> async handler(
     ops — wire-carrying by construction — so they register the layer's shared
     `apply_wires` (identity-comparable across cores: decomp also emits
     `derivation`, and the shared handler keeps that collision legal).
-    `collection-declaration` is the Collection-layer emission (ae3464fc)."""
-    return wires_handlers("source-emission", "derivation", "collection-declaration")
+    `collection-declaration` is the Collection-layer emission (ae3464fc);
+    `collection-curation` (updates/deletes, hub v0) replays via its own
+    domain-owned handler, unioned here."""
+    handlers = wires_handlers("source-emission", "derivation", "collection-declaration")
+    handlers.update(curation_replay_handlers())
+    return handlers
 
 
 def build_collection_emission(
