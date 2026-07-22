@@ -6,11 +6,12 @@ import dataclasses
 
 import pytest
 
-from cjm_transcription_core.emission import build_source_emission
-from cjm_transcription_core.models import SegmentRecord, SourceResult
+from cjm_transcription_core.emission import build_collection_emission, build_source_emission
+from cjm_transcription_core.models import CollectionDecl, SegmentRecord, SourceResult
 from cjm_transcript_graph_schema.schema import (
     audio_rendition_node_id,
     audio_segment_node_id,
+    collection_node_id,
     source_node_id,
     transcript_node_id,
 )
@@ -93,3 +94,32 @@ def test_identity_guards_fire_loudly():
         src, segments=[dataclasses.replace(src.segments[0], model_input_hash="")])
     with pytest.raises(ValueError):
         build_source_emission(no_hash, hashes)
+
+
+def test_collection_emission_payload():
+    cid = collection_node_id("Hardcore History")
+    decl = CollectionDecl(title="Hardcore History", status="proposed", actor="cli:transcribe",
+                          member_paths=["/media/ep1.mp3", "/media/ep2.mp3", "/media/gone.mp3"],
+                          ordered=True)
+    s1, s2 = source_node_id("sha256:ep1"), source_node_id("sha256:ep2")
+    path_map = {"/media/ep1.mp3": s1, "/media/ep2.mp3": s2}
+
+    # only COMPLETED sources file in; the unresolved member is skipped
+    nodes, edges, ids = build_collection_emission(decl, path_map)
+    assert ids == {"collection": cid, "members": [s1, s2]}
+    assert nodes[0]["label"] == "Collection"
+    assert nodes[0]["properties"]["status"] == "proposed"
+    assert nodes[0]["properties"]["root_kind"] == "asserted"
+    rels = sorted(e["relation_type"] for e in edges)
+    assert rels == ["NEXT", "PART_OF", "PART_OF", "STARTS_WITH"], "ordered decl = full spine"
+
+    # unordered declaration files membership without fabricating sequence
+    _, loose_edges, _ = build_collection_emission(
+        CollectionDecl(title="Hardcore History", member_paths=["/media/ep2.mp3"]), path_map)
+    assert [e["relation_type"] for e in loose_edges] == ["PART_OF"]
+    assert loose_edges[0]["target_id"] == cid, "late member attaches to the SAME node"
+
+    # no resolvable members = build nothing (capture never invents an empty collection)
+    empty = build_collection_emission(
+        CollectionDecl(title="Empty", member_paths=["/media/gone.mp3"]), path_map)
+    assert empty == ([], [], {"collection": None, "members": []})

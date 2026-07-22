@@ -29,12 +29,12 @@ import getpass
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_substrate.core.manager import CapabilityManager
 from cjm_substrate.core.queue import JobQueue
 from cjm_substrate.core.workspace import resolve_workspace
-from cjm_transcription_core.models import PipelineConfig
+from cjm_transcription_core.models import CollectionDecl, PipelineConfig
 from cjm_transcription_core.pipeline import run_pipeline
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,13 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
                           "substrate config + capability workers resolve workspace-scoped paths")
     run.add_argument("--actor", default=None,
                      help="Journal attribution for who/what initiated this run (default: cli:<username>)")
+    run.add_argument("--collection", default=None, metavar="TITLE",
+                     help="File ALL of this run's sources into the named collection (a human "
+                          "naming it lands status=confirmed; replaces the automatic per-folder "
+                          "proposals; ae3464fc)")
+    run.add_argument("--no-collection", action="store_true",
+                     help="Suppress the automatic folder->collection proposal (a directory arg "
+                          "otherwise proposes a collection named after the folder)")
     run.add_argument("-v", "--verbose", action="store_true", help="DEBUG-level logging")
     return parser
 
@@ -172,7 +179,13 @@ async def run_command(
         force=args.force,
         assume_yes=args.yes,
     )
-    sources = expand_sources(args.audio)
+    # CR-14 follow-up: actor attribution (operator identity by default; agents/
+    # services pass --actor explicitly). Computed here so the collection
+    # declarations carry the same attribution as the run.
+    actor = args.actor or f"cli:{getpass.getuser()}"
+    sources, collection_decls = expand_sources_with_collections(
+        args.audio, explicit_title=args.collection,
+        no_collection=args.no_collection, actor=actor)
     if args.graph_db_path and not args.graph_capability:
         raise SystemExit("--graph-db-path requires --graph-capability")
     max_concurrent = parse_max_concurrent(args.max_concurrent)
@@ -202,10 +215,8 @@ async def run_command(
     queue = JobQueue(deps=manager, sysmon_capability_name=args.sysmon_capability)
     await queue.start()
     try:
-        # CR-14 follow-up: actor attribution (operator identity by default;
-        # agents/services pass --actor explicitly).
-        actor = args.actor or f"cli:{getpass.getuser()}"
-        manifest = await run_pipeline(manager, queue, cfg, sources, actor=actor)
+        manifest = await run_pipeline(manager, queue, cfg, sources, actor=actor,
+                                      collections=collection_decls)
     finally:
         await queue.stop()
         for iid in reversed(loaded_ids):  # Reverse load order; the monitor unloads last
@@ -324,3 +335,40 @@ MEDIA_SUFFIXES = {
     ".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".wma",
     ".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm",
 }
+
+
+def expand_sources_with_collections(
+    paths: List[str],                      # CLI `audio` values: media files and/or directories, in order
+    explicit_title: Optional[str] = None,  # --collection TITLE: one human-named collection over ALL sources
+    no_collection: bool = False,           # --no-collection: suppress the folder->collection proposals
+    actor: str = "cli:transcribe",         # Attribution for the declarations
+) -> Tuple[List[str], List[CollectionDecl]]:  # (resolved media files, collection declarations)
+    """Expand CLI sources AND keep the folder-source gesture as collection
+    declarations (ae3464fc) instead of throwing it away at hand-off.
+
+    `expand_sources` stays the pure file expander; this sibling maps the
+    GESTURE: each DIRECTORY arg proposes one collection — title = the folder
+    name (underscores prettified for display; identity normalizes anyway),
+    members = its sorted expansion, which is a real order (ordered=True). The
+    proposals land status="proposed": a folder is EVIDENCE of a grouping, not
+    proof. `--collection TITLE` replaces the per-folder proposals with ONE
+    human-named declaration over all of the run's sources — a human naming it
+    is a confirmation act (status="confirmed"; ordered only when the members
+    came from a single folder expansion — never fabricate sequence from a
+    hand-typed file list). `--no-collection` expands only."""
+    if explicit_title and no_collection:
+        raise SystemExit("--collection and --no-collection are mutually exclusive")
+    files: List[str] = []
+    decls: List[CollectionDecl] = []
+    for p in paths:
+        expanded = expand_sources([p])
+        files.extend(expanded)
+        if Path(p).resolve().is_dir() and not no_collection and not explicit_title:
+            title = " ".join(Path(p).resolve().name.replace("_", " ").split())
+            decls.append(CollectionDecl(title=title, member_paths=list(expanded),
+                                        status="proposed", actor=actor, ordered=True))
+    if explicit_title:
+        ordered = len(paths) == 1 and Path(paths[0]).resolve().is_dir()
+        decls = [CollectionDecl(title=explicit_title, member_paths=list(files),
+                                status="confirmed", actor=actor, ordered=ordered)]
+    return files, decls

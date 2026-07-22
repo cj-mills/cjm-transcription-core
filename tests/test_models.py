@@ -18,10 +18,11 @@ def test_manifest_shape_and_config_defaults():
     m = RunManifest(run_id=new_run_id(), created_at=time.time(), config=cfg.to_dict())
     d = m.to_dict()
     assert d["format"] == "cjm-transcription-core/run-manifest"
-    assert d["version"] == "0.3.0"
+    assert d["version"] == "0.4.0"
     assert d["config"]["max_segment_duration"] == 220.0
     assert d["config"]["transcriber_capabilities"] == ["cjm-capability-whisper"]
     assert d["graph"] is None
+    assert d["collections"] == [], "0.4.0: collection declarations, [] when none ride the run"
     # preprocessing is OFF by default; the family-agnostic slot defaults to source_separation
     assert d["config"]["preprocessing_capability"] is None
     assert d["config"]["preprocessing_task"] == "source_separation"

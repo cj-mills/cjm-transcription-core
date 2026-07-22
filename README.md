@@ -22,6 +22,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 
 - `build_parser` _function_ — Build the CLI parser (subcommands: run).
 - `expand_sources` _function_ — Expand CLI source arguments into the ordered media-file list for a run.
+- `expand_sources_with_collections` _function_ — Expand CLI sources AND keep the folder-source gesture as collection
 - `load_capabilities` _function_ — Discover manifests + load each requested capability.
 - `main` _function_ — CLI entry point (console script: `cjm-transcription-core`).
 - `parse_max_concurrent` _function_ — Parse repeatable `--max-concurrent NAME=N` values into a per-capability cap map.
@@ -30,12 +31,15 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 
 ### `cjm_transcription_core.emission`
 
+- `build_collection_emission` _function_ — Build the Collection layer payload for one declaration (pure; no
 - `build_source_emission` _function_ — Build the graph-root payload for one source (pure; no capability calls).
+- `emit_collections_graph` _function_ — Idempotently emit the run's collection declarations (verb
 - `emit_source_graph` _function_ — Idempotently emit one source's graph root through the task channel.
 - `transcription_replay_handlers` _function_ — The transcription core's replay vocabulary (DEC 426658f1, replay stays DOMAIN-OWNED).
 
 ### `cjm_transcription_core.models`
 
+- `CollectionDecl` _class_ — A collection declaration riding a run (ae3464fc: the folder-source
 - `PipelineConfig` _class_ — Configuration for one transcription pipeline run.
 - `RunManifest` _class_ — Durable record of one pipeline run (proto-bundle; see CR-20).
 - `SegmentRecord` _class_ — One segment of a source audio file, with per-transcriber transcripts.

@@ -3,8 +3,9 @@
 Projected from the cli notebook's parser-check cell at the golden-reference flip."""
 import pytest
 
-from cjm_transcription_core.cli import (build_parser, expand_sources, parse_max_concurrent,
-                                         parse_transcriber_spec)
+from cjm_transcription_core.cli import (build_parser, expand_sources,
+                                         expand_sources_with_collections,
+                                         parse_max_concurrent, parse_transcriber_spec)
 
 
 def test_run_defaults_and_opt_ins():
@@ -113,3 +114,41 @@ def test_expand_sources_refuses_loudly(tmp_path):
     empty.mkdir()
     with pytest.raises(SystemExit):
         expand_sources([str(empty)])
+
+
+def test_expand_sources_with_collections(tmp_path):
+    d = tmp_path / "Hardcore_History"
+    d.mkdir()
+    (d / "ep1.mp3").write_bytes(b"x")
+    (d / "ep2.mp3").write_bytes(b"x")
+    lone = tmp_path / "lone.opus"
+    lone.write_bytes(b"x")
+
+    # folder gesture -> ONE proposed, ordered declaration; bare files ride outside it
+    files, decls = expand_sources_with_collections([str(lone), str(d)])
+    assert files == [str(lone.resolve()),
+                     str((d / "ep1.mp3").resolve()),
+                     str((d / "ep2.mp3").resolve())]
+    assert len(decls) == 1
+    decl = decls[0]
+    assert decl.title == "Hardcore History", "folder name prettified for display"
+    assert decl.status == "proposed" and decl.ordered is True
+    assert decl.member_paths == files[1:], "only the folder's expansion files in"
+
+    # --collection TITLE: one human-named CONFIRMED declaration over ALL sources;
+    # a hand-typed file list carries no fabricated order
+    files2, decls2 = expand_sources_with_collections(
+        [str(lone), str(d)], explicit_title="My Book", actor="cli:cj")
+    assert len(decls2) == 1
+    assert decls2[0].status == "confirmed" and decls2[0].actor == "cli:cj"
+    assert decls2[0].member_paths == files2 and decls2[0].ordered is False
+
+    # single-folder run with an explicit title keeps the expansion order
+    _, decls3 = expand_sources_with_collections([str(d)], explicit_title="My Book")
+    assert decls3[0].ordered is True
+
+    # --no-collection expands only; the flag pair refuses loudly
+    _, none_decls = expand_sources_with_collections([str(d)], no_collection=True)
+    assert none_decls == []
+    with pytest.raises(SystemExit):
+        expand_sources_with_collections([str(d)], explicit_title="X", no_collection=True)

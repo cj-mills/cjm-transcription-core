@@ -19,9 +19,9 @@ from cjm_substrate.core.ports import (Composition, CompositionNode, CompositionR
 from cjm_substrate.core.queue import JobQueue, JobStatus
 from cjm_substrate.utils.hashing import hash_file
 from cjm_transcription_core.boundaries import compute_segment_boundaries
-from cjm_transcription_core.emission import emit_source_graph
-from cjm_transcription_core.models import (new_run_id, PipelineConfig, RunManifest, SegmentRecord,
-                                           SourceResult)
+from cjm_transcription_core.emission import emit_collections_graph, emit_source_graph
+from cjm_transcription_core.models import (CollectionDecl, new_run_id, PipelineConfig, RunManifest,
+                                           SegmentRecord, SourceResult)
 
 # Typed wire-kind registration (stage 2): importing the DTO classes is what
 # lets the proxy's wire_decode hand this host process TYPED results. Stage 8:
@@ -499,6 +499,7 @@ async def run_pipeline(
     sources: List[str],      # Source audio paths, in order
     run_id: Optional[str] = None,  # Override run id (default: generated)
     actor: Optional[str] = None,   # Who/what initiated (journal attribution; CLI default cli:<user>)
+    collections: Optional[List[CollectionDecl]] = None,  # Collection declarations riding this run (ae3464fc; None/[] = none)
 ) -> RunManifest:  # Manifest of everything the run produced
     """Run the transcription pipeline over the given sources, in order.
 
@@ -506,7 +507,9 @@ async def run_pipeline(
     completed so far (capability-side caches make re-runs cheap). With
     `cfg.graph_capability` set, each completed source EMITS the graph root
     (Source → AudioSegment → AudioRendition → Transcript; CR-18 revolution 2)
-    idempotently — re-runs verify-collide instead of duplicating.
+    idempotently — re-runs verify-collide instead of duplicating. Collection
+    declarations emit AFTER the source loop over whatever completed (an aborted
+    folder run files exactly the finished prefix; membership extends on re-run).
     """
     run_id = run_id or new_run_id()
     # CR-14 follow-up: queue-scoped run context — every job submitted in this
@@ -530,6 +533,7 @@ async def run_pipeline(
         created_at=time.time(),
         config=cfg.to_dict(),
         capabilities=collect_capability_info(manager, capability_ids),
+        collections=list(collections or []),
     )
     if cfg.graph_capability:
         manifest.graph = {
@@ -580,6 +584,20 @@ async def run_pipeline(
             "sources_completed": len(manifest.sources), "sources_total": len(sources),
         })
         raise
+    # Collection layer (ae3464fc): file whatever completed — an aborted run's
+    # finished prefix included — into the declared collections; idempotent like
+    # the source roots (records ride manifest.graph["collections"]).
+    if cfg.graph_capability and manifest.collections:
+        path_to_source_id = {
+            s.source_path: s.graph["source_node_id"]
+            for s in manifest.sources if s.graph and s.graph.get("source_node_id")
+        }
+        coll_records = await emit_collections_graph(
+            queue, cfg.graph_capability, manifest.collections, path_to_source_id,
+            run_id, journal_path=graph_journal_path,
+        )
+        if manifest.graph is not None:
+            manifest.graph["collections"] = coll_records
     _journal_run_event(manager, SubstrateEventType.RUN_FINISHED.value, run_id, actor, {
         "core": "cjm-transcription-core", "status": status,
         "sources_completed": len(manifest.sources), "sources_total": len(sources),

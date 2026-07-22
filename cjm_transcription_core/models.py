@@ -92,7 +92,9 @@ class SourceResult:
 class RunManifest:
     """Durable record of one pipeline run (proto-bundle; see CR-20).
 
-    Schema 0.3.0 (AudioRendition era): per-source `chain` records the
+    Schema 0.4.0 adds `collections` — the run's collection declarations
+    (ae3464fc; additive, [] when none ride the run). Schema 0.3.0
+    (AudioRendition era): per-source `chain` records the
     preprocessing chain that produced the model-inputs ([] = raw convert-only),
     so a downstream extender can RECOMPUTE the deterministic AudioRendition node
     id (and the Transcript/Segment ids keyed on it) with no search. Builds on
@@ -104,9 +106,10 @@ class RunManifest:
     capabilities: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # instance_id -> {name, version, db_path, config_hash}
     sources: List[SourceResult] = field(default_factory=list)         # Per-source results, input order
     graph: Optional[Dict[str, Any]] = None  # Emission target: {capability, db_path} (None = no emission this run)
+    collections: List["CollectionDecl"] = field(default_factory=list)  # Collection declarations riding this run (0.4.0; [] = none)
 
     FORMAT: str = field(default="cjm-transcription-core/run-manifest", repr=False)  # Manifest format tag
-    VERSION: str = field(default="0.3.0", repr=False)                               # Manifest schema version
+    VERSION: str = field(default="0.4.0", repr=False)                               # Manifest schema version
 
     def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for JSON serialization
         """Serialize to a plain dict with nested sources."""
@@ -119,6 +122,7 @@ class RunManifest:
             "capabilities": self.capabilities,
             "sources": [s.to_dict() for s in self.sources],
             "graph": self.graph,
+            "collections": [c.to_dict() for c in self.collections],
         }
 
     def save(
@@ -140,3 +144,27 @@ class RunManifest:
 def new_run_id() -> str:  # e.g. "run_20260607_153000_1a2b3c4d"
     """Generate a unique, sortable run id."""
     return f"run_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
+
+@dataclass
+class CollectionDecl:
+    """A collection declaration riding a run (ae3464fc: the folder-source
+    gesture IS a collection-shaped declaration — captured at hand-off instead
+    of thrown away).
+
+    `status` follows the actor criterion: a human who accepted/renamed/selected
+    the collection at launch has confirmed it; untouched tool defaults (a
+    headless folder run) stay "proposed". `ordered` is True only when the
+    members carry a real order (a folder's sorted expansion) — never fabricate
+    sequence at capture. Members are the run-source paths the declaration
+    covers; emission maps them to Source node ids from the completed results,
+    so an aborted run files exactly the members that finished."""
+    title: str                   # Collection display title (identity input via the schema's normalization)
+    member_paths: List[str] = field(default_factory=list)  # Resolved member source paths (declaration order)
+    status: str = "proposed"     # "proposed" (tool inference) | "confirmed" (human act)
+    actor: str = "cli:transcribe"  # Who declared it (attribution)
+    ordered: bool = False        # True = members carry a proposed order (folder expansion)
+
+    def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for the run manifest
+        """Serialize to a plain dict."""
+        return asdict(self)

@@ -7,9 +7,10 @@ from cjm_context_graph_layer.declare import Derivation, derivation_to_graph
 from cjm_context_graph_layer.grammar import spine_edges
 from cjm_context_graph_layer.journal import journal_extend, wires_handlers
 from cjm_substrate.core.queue import JobQueue
-from cjm_transcript_graph_schema.schema import (AudioRenditionNode, AudioSegmentNode, SourceNode,
+from cjm_transcript_graph_schema.schema import (AudioRenditionNode, AudioSegmentNode,
+                                                collection_edges, CollectionNode, SourceNode,
                                                 TranscriptNode)
-from cjm_transcription_core.models import SourceResult
+from cjm_transcription_core.models import CollectionDecl, SourceResult
 
 logger = logging.getLogger(__name__)
 
@@ -144,8 +145,76 @@ def transcription_replay_handlers() -> Dict[str, Any]:  # verb -> async handler(
     """The transcription core's replay vocabulary (DEC 426658f1, replay stays DOMAIN-OWNED).
 
     Exported through the `cjm_context_graph_layer.replay` entry-point group and
-    unioned by `composed_replay_handlers`. Both verbs are `journal_extend` ops —
-    wire-carrying by construction — so they register the layer's shared
+    unioned by `composed_replay_handlers`. All three verbs are `journal_extend`
+    ops — wire-carrying by construction — so they register the layer's shared
     `apply_wires` (identity-comparable across cores: decomp also emits
-    `derivation`, and the shared handler keeps that collision legal)."""
-    return wires_handlers("source-emission", "derivation")
+    `derivation`, and the shared handler keeps that collision legal).
+    `collection-declaration` is the Collection-layer emission (ae3464fc)."""
+    return wires_handlers("source-emission", "derivation", "collection-declaration")
+
+
+def build_collection_emission(
+    decl: CollectionDecl,               # The run's collection declaration
+    path_to_source_id: Dict[str, str],  # Completed source path -> Source node id
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:  # (nodes, edges, ids)
+    """Build the Collection layer payload for one declaration (pure; no
+    capability calls) — the fractal spine rung ABOVE Source (ae3464fc).
+
+    Members resolve through `path_to_source_id`, so only sources that actually
+    COMPLETED file into the collection — an aborted folder run files exactly
+    the finished prefix, and the next run's re-emission verify-collides into
+    the same deterministic node/edge ids and extends membership. Order edges
+    (NEXT + STARTS_WITH via `collection_edges(ordered=True)`) materialize only
+    when the declaration carries a real order; unordered declarations are
+    PART_OF-only. A declaration with NO resolvable members builds nothing —
+    capture never invents an empty collection."""
+    member_ids = [path_to_source_id[p] for p in decl.member_paths if p in path_to_source_id]
+    if not member_ids:
+        return [], [], {"collection": None, "members": []}
+    coll = CollectionNode(title=decl.title, status=decl.status, actor=decl.actor)
+    edges = collection_edges(coll.id, member_ids, ordered=decl.ordered)
+    ids = {"collection": coll.id, "members": member_ids}
+    return [coll.to_graph_node()], edges, ids
+
+
+async def emit_collections_graph(
+    queue: JobQueue,                    # Started job queue
+    graph_id: str,                      # Graph-storage capability instance id
+    decls: List[CollectionDecl],        # The run's collection declarations
+    path_to_source_id: Dict[str, str],  # Completed source path -> Source node id
+    run_id: str,                        # Run id (journal attribution)
+    journal_path: Optional[str] = None,  # Sidecar write journal (None = unjournaled)
+) -> List[Dict[str, Any]]:  # Emission records for the manifest
+    """Idempotently emit the run's collection declarations (verb
+    `collection-declaration`, wire-carrying like every emission op).
+
+    Same extend-if-absent/verify-if-present semantics as the source root: a
+    re-run of the same folder collides into a verified no-op; a later
+    individual-member run EXTENDS membership on the same collection node
+    (title identity — late binding by construction). Declarations that resolve
+    no completed members are skipped."""
+    records: List[Dict[str, Any]] = []
+    for decl in decls:
+        nodes, edges, ids = build_collection_emission(decl, path_to_source_id)
+        if not nodes:
+            logger.info(f"collection '{decl.title}': no completed members this run; skipped")
+            continue
+        res = await journal_extend(queue, graph_id, nodes, edges,
+                                   journal_path=journal_path, verb="collection-declaration",
+                                   actor=decl.actor, run=run_id,
+                                   args={"collection_id": ids["collection"],
+                                         "title": decl.title, "status": decl.status,
+                                         "ordered": decl.ordered})
+        record = {
+            "collection_node_id": ids["collection"],
+            "title": decl.title,
+            "status": decl.status,
+            "members": ids["members"],
+            "nodes_added": res.nodes_added,
+            "nodes_verified": res.nodes_verified,
+            "edges_added": res.edges_added,
+            "edges_existing": res.edges_existing,
+        }
+        logger.info(f"collection emission: {record}")
+        records.append(record)
+    return records
