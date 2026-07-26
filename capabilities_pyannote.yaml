@@ -1,0 +1,33 @@
+capabilities:
+  # ----------------------------------------------------------------
+  # Media Analysis: pyannote speaker diarization (community-1)
+  # Anonymous time-ranged speaker turns BESIDE transcription — the
+  # silero-vad family shape (analysis, NOT preprocessing): it never
+  # changes what the transcribers hear (a9cadfec / DEC 7a44a808).
+  # HF-GATED model: accept pyannote/speaker-diarization-community-1
+  # user conditions + provision a token (hf auth login / HF_TOKEN).
+  # Identity stays the correction TUI's assignment lane (DEC 44afb2df).
+  # SINGLE-ENTRY ADDITIVE RECIPE: `cjm-ctl install-all --capabilities
+  # capabilities_pyannote.yaml` adds this env + manifests without
+  # touching existing envs; the same entry is mirrored into
+  # capabilities_test.yaml for full-workspace installs.
+  # ----------------------------------------------------------------
+  - name: pyannote
+    env_name: test-pyannote
+
+    # Environment File
+    env_file: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-pyannote/environment.yml"
+
+    # The Capability Package (local source)
+    package: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-pyannote/"
+
+    # Interface Libraries (schema v2: substrate AUTO-INJECTED; the tool depends
+    # only on the result data noun)
+    interface_libs:
+      - "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-capability-primitives/"
+
+    # Adapter impls this worker env carries (the generic diarization adapter;
+    # auto-binds to pyannote via surface match: diarize + get_current_config)
+    adapters:
+      - lib: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-speaker-diarization-adapter-interface/"
+        impl: "cjm_speaker_diarization_adapter_interface.generic:GenericSpeakerDiarizationAdapter"
