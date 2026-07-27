@@ -65,6 +65,14 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
                      help="Opt-in audio-preprocessing capability (e.g. cjm-capability-demucs for vocals "
                           "isolation); runs per-segment on FULL-BAND audio BEFORE the model-input convert, "
                           "via the source_separation task channel (default: no preprocessing)")
+    run.add_argument("--diarization-capability", default=None,
+                     help="Speaker-diarization capability (default: cjm-capability-pyannote when "
+                          "installed — the untouched default degrades to a warning if missing; an "
+                          "explicit name fails loudly). Default-ON: runs ONCE per source on the "
+                          "full decoded PCM rendition; turns persist SOURCE-KEYED under "
+                          "<workspace>/diarization/ so existing spines inherit them")
+    run.add_argument("--no-diarization", action="store_true",
+                     help="Disable the default-on speaker-diarization rung")
     run.add_argument("--graph-capability", default=None,
                      help="Graph-storage capability for Source/AudioSegment/Transcript emission "
                           "(CR-18 revolution 2); default: no emission, manifest-only run")
@@ -171,6 +179,9 @@ async def run_command(
         ffmpeg_capability=args.ffmpeg_capability,
         transcriber_capabilities=transcribers,
         preprocessing_capability=args.preprocessing_capability,
+        diarization_capability=(None if args.no_diarization
+                                else (args.diarization_capability or "cjm-capability-pyannote")),
+        diarization_root=(str(ws.root) if ws is not None else None),
         graph_capability=args.graph_capability,
         graph_db_path=args.graph_db_path,
         max_segment_duration=args.max_segment_duration,
@@ -198,9 +209,19 @@ async def run_command(
         search_paths=[Path(args.manifests_dir)],
         sysmon_capability_name=args.sysmon_capability,
     )
+    # Default-ON diarization degrades gracefully: the UNTOUCHED default skips
+    # with a warning when the capability isn't installed; an explicit
+    # --diarization-capability still fails loudly in load_capabilities.
+    if cfg.diarization_capability and not args.diarization_capability:
+        manager.discover_manifests()
+        if cfg.diarization_capability not in {m.name for m in manager.discovered}:
+            logger.warning(f"default diarization capability {cfg.diarization_capability!r} "
+                           "not installed — running without speaker diarization")
+            cfg.diarization_capability = None
     # Preprocessing (opt-in) loads alongside the other compute capabilities; its
     # adapter auto-binds by surface match exactly like VAD/transcription.
     instance_ids = ([cfg.ffmpeg_capability, cfg.vad_capability]
+                    + ([cfg.diarization_capability] if cfg.diarization_capability else [])
                     + ([cfg.preprocessing_capability] if cfg.preprocessing_capability else [])
                     + list(specs)
                     + ([cfg.graph_capability] if cfg.graph_capability else []))
@@ -233,6 +254,13 @@ async def run_command(
     print(f"sources completed: {len(manifest.sources)}/{len(sources)}  segments: {done}  transcribers: {len(transcribers)}")
     if cfg.preprocessing_capability:
         print(f"preprocessing: {cfg.preprocessing_capability} ({cfg.preprocessing_task}/{cfg.preprocessing_method})")
+    if cfg.diarization_capability:
+        for s in manifest.sources:
+            d = s.diarization or {}
+            line = f"diarization [{Path(s.source_path).name}]: {d.get('status', 'skipped')}"
+            if d.get("status") == "ok":
+                line += f"  speakers: {d.get('speaker_count')}  turns: {d.get('turn_count')}"
+            print(line)
     if cfg.graph_capability:
         for s in manifest.sources:
             print(f"graph emission [{Path(s.source_path).name}]: {s.graph}")

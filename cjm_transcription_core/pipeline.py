@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from cjm_capability_primitives.media_processing import (MediaArtifactResult, MediaMetadata,
                                                         MediaSegmentationResult)
 from cjm_capability_primitives.source_separation import SourceSeparationResult
+from cjm_capability_primitives.speaker_diarization import (SpeakerDiarizationResult,
+                                                           write_turns_artifact)
 from cjm_capability_primitives.transcription import TranscriptionResult
 from cjm_capability_primitives.vad import VADResult
 from cjm_context_graph_layer.journal import sidecar_journal_path
@@ -32,6 +34,7 @@ from cjm_transcription_core.models import (CollectionDecl, new_run_id, PipelineC
 # cannot prune them (they are registration bindings, not name-use).
 
 _REGISTERED_WIRE_KINDS = (VADResult, TranscriptionResult, SourceSeparationResult,
+                          SpeakerDiarizationResult,
                           MediaArtifactResult, MediaSegmentationResult, MediaMetadata)
 
 logger = logging.getLogger(__name__)
@@ -337,6 +340,7 @@ async def run_source(
     source_path: str,     # Source audio file
     run_id: str,          # Run id (prefixes per-segment job ids)
     source_index: int,    # Position of this source within the run
+    diarization_info: Optional[Dict[str, Any]] = None,  # Manifest capability record for the diarizer (provenance; None when diarization is OFF)
 ) -> Optional[SourceResult]:  # None when the operator aborts at a seam
     """Run the full pipeline for one source: VAD → boundaries → cut → [preprocess →] convert → transcribe."""
     t0 = time.time()
@@ -359,6 +363,20 @@ async def run_source(
     if duration <= 0:
         duration = await probe_duration(queue, cfg.ffmpeg_capability, source_path)
     logger.info(f"[src {source_index}] VAD: {len(chunks)} speech chunks over {duration:.1f}s")
+
+    # 1b. Speaker diarization (default-on, 2026-07-26) rides BESIDE
+    #     transcription on the SAME decoded PCM rendition the chunking VAD
+    #     consumed (raw MP3 fails pyannote's crop; full-source only — per-chunk
+    #     labels don't correspond). Source-keyed persistence means EXISTING
+    #     decomposed spines inherit the turns; the correction TUI's assign lane
+    #     is the consumer. Contained failures never abort the run.
+    diarization = await acquire_speaker_turns(queue, cfg, source_path, content_hash,
+                                              vad_audio, capability_info=diarization_info)
+    if diarization is not None:
+        logger.info(f"[src {source_index}] diarization: {diarization.get('status')}"
+                    + (f" ({diarization.get('speaker_count')} speakers, "
+                       f"{diarization.get('turn_count')} turns)"
+                       if diarization.get("status") == "ok" else ""))
 
     # 2. Boundaries (pure logic)
     boundaries = compute_segment_boundaries(chunks, cfg.max_segment_duration, duration)
@@ -423,6 +441,7 @@ async def run_source(
         source_path=source_path, duration=duration,
         vad_chunk_count=len(chunks), batch_key=batch_key,
         content_hash=content_hash, segments=records,
+        diarization=diarization,
     )
 
 
@@ -522,9 +541,11 @@ async def run_pipeline(
         "sources": [str(s) for s in sources],
         "transcribers": list(cfg.transcriber_capabilities),
         "preprocessing_capability": cfg.preprocessing_capability,
+        "diarization_capability": cfg.diarization_capability,
         "graph_capability": cfg.graph_capability,
     })
     capability_ids = ([cfg.vad_capability, cfg.ffmpeg_capability]
+                  + ([cfg.diarization_capability] if cfg.diarization_capability else [])
                   + ([cfg.preprocessing_capability] if cfg.preprocessing_capability else [])
                   + list(cfg.transcriber_capabilities)
                   + ([cfg.graph_capability] if cfg.graph_capability else []))
@@ -561,7 +582,10 @@ async def run_pipeline(
     status = "completed"
     try:
         for i, src in enumerate(sources):
-            result = await run_source(queue, cfg, str(src), run_id, i)
+            result = await run_source(
+                queue, cfg, str(src), run_id, i,
+                diarization_info=(manifest.capabilities.get(cfg.diarization_capability)
+                                  if cfg.diarization_capability else None))
             if result is None:
                 logger.warning(
                     f"run {run_id}: aborted at source {i} ({src}); manifest holds {i} source(s)"
@@ -604,3 +628,50 @@ async def run_pipeline(
         "segments": sum(len(s.segments) for s in manifest.sources),
     })
     return manifest
+
+
+async def acquire_speaker_turns(
+    queue: JobQueue,
+    cfg: PipelineConfig,   # Run configuration (diarization_* fields)
+    source_path: str,      # Original source audio path (provenance)
+    content_hash: str,     # Source content hash — the artifact KEY
+    pcm_audio: str,        # Decoded PCM rendition (the SAME file the chunking VAD ran on)
+    capability_info: Optional[Dict[str, Any]] = None,  # Manifest capability record for provenance (name, version, config_hash)
+) -> Optional[Dict[str, Any]]:  # Manifest diarization record, or None when diarization is OFF
+    """Diarize the full source and persist the source-keyed turns artifact.
+
+    The signal-acquisition rung (DEC 7a44a808: diarize in-workflow, assign
+    post-correction). FULL-SOURCE only — per-chunk cluster labels don't
+    correspond across chunks (probe evidence 2026-07-25) — on the decoded PCM
+    rendition, because raw MP3 fails pyannote's crop (VBR seek imprecision).
+    Failures are CONTAINED: diarization rides BESIDE transcription, so a
+    failed/unavailable diarizer logs and records status=failed instead of
+    killing the run (task channel: speaker_diarization/diarize)."""
+    if not cfg.diarization_capability:
+        return None
+    try:
+        result = await submit_and_wait(
+            queue, cfg.diarization_capability, audio=pcm_audio,
+            task=cfg.diarization_task, method=cfg.diarization_method,
+            control={"force": cfg.force})
+        record: Dict[str, Any] = {
+            "capability": cfg.diarization_capability,
+            "config_hash": (capability_info or {}).get("config_hash"),
+            "status": "ok",
+            "turn_count": len(result.turns),
+            "speaker_count": len({t.speaker for t in result.turns}),
+        }
+        if cfg.diarization_root:
+            path = write_turns_artifact(
+                cfg.diarization_root, source_path=source_path, content_hash=content_hash,
+                result=result,
+                capability={**(capability_info or {}), "instance_id": cfg.diarization_capability},
+                rendition={"path": pcm_audio, "sample_rate": cfg.sample_rate,
+                           "channels": cfg.channels},
+            )
+            record["turns_path"] = str(path)
+        return record
+    except Exception as e:
+        logger.error(f"speaker diarization failed for {source_path}: {e}")
+        return {"capability": cfg.diarization_capability, "status": "failed",
+                "error": str(e)}

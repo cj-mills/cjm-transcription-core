@@ -28,6 +28,16 @@ class PipelineConfig:
     preprocessing_capability: Optional[str] = None        # Preprocessing capability instance id (None = preprocessing OFF)
     preprocessing_task: str = "source_separation"     # Task-channel task for the preprocessing step
     preprocessing_method: str = "separate_vocals"     # Task-channel method for the preprocessing step
+    # Default-ON speaker diarization (2026-07-26): anonymous full-source turns
+    # acquired BESIDE transcription (analysis, the silero-vad family shape —
+    # never preprocessing; a9cadfec / DEC 7a44a808). SOURCE-KEYED: the turns
+    # artifact lands under <diarization_root>/diarization/ by source content
+    # hash, so existing decomposed spines inherit turns with no respine.
+    # Failures are contained — signal acquisition must not kill a run.
+    diarization_capability: Optional[str] = "cjm-capability-pyannote"  # Diarization capability instance id (None = diarization OFF)
+    diarization_task: str = "speaker_diarization"  # Task-channel task for the diarization step
+    diarization_method: str = "diarize"            # Task-channel method for the diarization step
+    diarization_root: Optional[str] = None         # Turns-artifact root (workspace root; None = no artifact persistence)
     max_segment_duration: float = 220.0  # Wall-clock cap per segment in seconds (pre-emptive cuts). 220 keeps each segment's forced-alignment input clear of qwen3-FA's ~240-250s degeneracy cliff (300 sat AT the cliff -> tail over-assignment; FA over-assignment investigation 2026-06-16; 220 chosen over 240 to absorb the soft-cap silence-gap overshoot)
     sample_rate: int = 16000             # Model-input sample rate for the per-segment convert step
     channels: int = 1                    # Model-input channel count
@@ -73,6 +83,7 @@ class SourceResult:
     segments: List[SegmentRecord] = field(default_factory=list)  # Ordered transcribed segments
     chain: List[str] = field(default_factory=list)  # Preprocessing chain that produced the model-inputs ([] = raw convert-only); AudioRendition identity input — extenders recompute the rendition id from it
     graph: Optional[Dict[str, Any]] = None  # Emission record: {source_node_id, nodes_added, nodes_verified, edges_added} (None = not emitted)
+    diarization: Optional[Dict[str, Any]] = None  # Diarization record: {capability, config_hash, status, turn_count, speaker_count, turns_path} (None = diarization OFF this run)
 
     def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for the run manifest
         """Serialize to a plain dict with nested segments."""
@@ -85,6 +96,7 @@ class SourceResult:
             "segments": [s.to_dict() for s in self.segments],
             "chain": list(self.chain),
             "graph": self.graph,
+            "diarization": self.diarization,
         }
 
 
@@ -92,7 +104,10 @@ class SourceResult:
 class RunManifest:
     """Durable record of one pipeline run (proto-bundle; see CR-20).
 
-    Schema 0.4.0 adds `collections` — the run's collection declarations
+    Schema 0.5.0 adds per-source `diarization` — the speaker-diarization
+    provenance record for the default-on turns-acquisition rung (the turns
+    themselves persist SOURCE-KEYED under <workspace>/diarization/, not in
+    the manifest). Schema 0.4.0 adds `collections` — the run's collection declarations
     (ae3464fc; additive, [] when none ride the run). Schema 0.3.0
     (AudioRendition era): per-source `chain` records the
     preprocessing chain that produced the model-inputs ([] = raw convert-only),
@@ -109,7 +124,7 @@ class RunManifest:
     collections: List["CollectionDecl"] = field(default_factory=list)  # Collection declarations riding this run (0.4.0; [] = none)
 
     FORMAT: str = field(default="cjm-transcription-core/run-manifest", repr=False)  # Manifest format tag
-    VERSION: str = field(default="0.4.0", repr=False)                               # Manifest schema version
+    VERSION: str = field(default="0.5.0", repr=False)                               # Manifest schema version
 
     def to_dict(self) -> Dict[str, Any]:  # Plain-dict form for JSON serialization
         """Serialize to a plain dict with nested sources."""

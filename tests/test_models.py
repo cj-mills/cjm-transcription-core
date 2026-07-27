@@ -18,7 +18,7 @@ def test_manifest_shape_and_config_defaults():
     m = RunManifest(run_id=new_run_id(), created_at=time.time(), config=cfg.to_dict())
     d = m.to_dict()
     assert d["format"] == "cjm-transcription-core/run-manifest"
-    assert d["version"] == "0.4.0"
+    assert d["version"] == "0.5.0"
     assert d["config"]["max_segment_duration"] == 220.0
     assert d["config"]["transcriber_capabilities"] == ["cjm-capability-whisper"]
     assert d["graph"] is None
@@ -63,3 +63,29 @@ def test_manifest_save_round_trip(tmp_path):
     import json
     loaded = json.loads(out.read_text())
     assert loaded["run_id"] == m.run_id
+
+
+def test_diarization_config_and_manifest_record(tmp_path):
+    """Default-ON diarization config + per-source diarization record (0.5.0)."""
+    cfg = PipelineConfig()
+    assert cfg.diarization_capability == "cjm-capability-pyannote"
+    assert cfg.diarization_task == "speaker_diarization"
+    assert cfg.diarization_method == "diarize"
+    assert cfg.diarization_root is None  # cli supplies the workspace root
+
+    src = SourceResult(
+        source_path="/audio/ep.mp3", duration=4200.0, vad_chunk_count=71,
+        batch_key="bk", content_hash="sha256:abc",
+        diarization={"capability": "cjm-capability-pyannote", "status": "ok",
+                     "turn_count": 71, "speaker_count": 3,
+                     "turns_path": str(tmp_path / "diarization" / "sha256-abc.json")},
+    )
+    manifest = RunManifest(run_id="r1", created_at=0.0, config=cfg.to_dict(),
+                           sources=[src])
+    d = manifest.to_dict()
+    assert d["version"] == "0.5.0"
+    assert d["config"]["diarization_capability"] == "cjm-capability-pyannote"
+    assert d["sources"][0]["diarization"]["speaker_count"] == 3
+    # diarization OFF serializes as an explicit None (spine-visible absence)
+    off = SourceResult(source_path="a", duration=1.0, vad_chunk_count=0, batch_key="b")
+    assert off.to_dict()["diarization"] is None

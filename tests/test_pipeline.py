@@ -191,3 +191,51 @@ def test_collect_capability_info_multi_instance():
     assert info["cjm-capability-whisper"]["config"] == {"model": "tiny"}
     # distinct effective configs hash distinctly (Transcript identity input)
     assert info["whisper-large"]["config_hash"] != info["cjm-capability-whisper"]["config_hash"]
+
+
+def test_acquire_speaker_turns_ok_and_contained_failure(tmp_path, monkeypatch):
+    """The diarization rung: persists the source-keyed artifact on success and
+    CONTAINS failures (status=failed record, never an exception — signal
+    acquisition must not kill a transcription run)."""
+    import asyncio
+
+    from cjm_capability_primitives.speaker_diarization import (SpeakerDiarizationResult,
+                                                               SpeakerTurn, load_turns_artifact)
+    from cjm_transcription_core import pipeline as pl
+    from cjm_transcription_core.models import PipelineConfig
+
+    cfg = PipelineConfig(diarization_root=str(tmp_path))
+    calls = {}
+
+    async def fake_submit(queue, instance_id, **kwargs):
+        calls.update(kwargs, instance_id=instance_id)
+        return SpeakerDiarizationResult(
+            turns=[SpeakerTurn(start=0.0, end=21.9, speaker="SPEAKER_00"),
+                   SpeakerTurn(start=21.9, end=40.0, speaker="SPEAKER_01")],
+            metadata={"speaker_count": 2})
+
+    monkeypatch.setattr(pl, "submit_and_wait", fake_submit)
+    record = asyncio.run(pl.acquire_speaker_turns(
+        None, cfg, "/audio/ep.mp3", "sha256:abc", "/tmp/ep.wav",
+        capability_info={"name": "cjm-capability-pyannote", "config_hash": "cfg1"}))
+    assert record["status"] == "ok"
+    assert record["speaker_count"] == 2 and record["turn_count"] == 2
+    assert record["config_hash"] == "cfg1"
+    assert calls["task"] == "speaker_diarization" and calls["method"] == "diarize"
+    assert calls["audio"] == "/tmp/ep.wav"  # the decoded PCM rendition, not the source
+    artifact = load_turns_artifact(tmp_path, "sha256:abc")
+    assert artifact["capability"]["instance_id"] == "cjm-capability-pyannote"
+    assert artifact["result"].turns[0].end == 21.9
+
+    async def boom(queue, instance_id, **kwargs):
+        raise RuntimeError("HF token missing")
+
+    monkeypatch.setattr(pl, "submit_and_wait", boom)
+    failed = asyncio.run(pl.acquire_speaker_turns(
+        None, cfg, "/audio/ep.mp3", "sha256:abc", "/tmp/ep.wav"))
+    assert failed["status"] == "failed" and "HF token" in failed["error"]
+
+    # diarization OFF -> no record, no capability call
+    cfg_off = PipelineConfig(diarization_capability=None)
+    assert asyncio.run(pl.acquire_speaker_turns(
+        None, cfg_off, "/audio/ep.mp3", "sha256:abc", "/tmp/ep.wav")) is None
