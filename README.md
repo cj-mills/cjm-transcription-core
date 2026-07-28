@@ -8,7 +8,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 
 - **`cjm_transcription_core.boundaries`** — Wall-clock-aware segment boundary computation: group VAD speech chunks into segments cut at silence-gap midpoints. Pure logic — no capability calls. Final home of the algorithm originally validated in cjm-transcription-audio-segment's AudioSegmentService.compute_segment_boundaries (that library is retired to cj-mills_deferred/).
 - **`cjm_transcription_core.cli`** — The CLI driver — the workflow core's first (and currently only) frontend.
-- **`cjm_transcription_core.curation`**
+- **`cjm_transcription_core.curation`** — Collection curation vocabulary (hub v0, e5849229): the journaled update/delete
 - **`cjm_transcription_core.emission`** — Graph-root emission (CR-18 revolution 2): a completed source EMITS Source -> AudioSegment -> Transcript into the shared context graph — the graph BEGINS at transcription (where-graph-begins resolution: ingestion is the first EXTENDER that plants the root). Deterministic identity tuples make emission idempotent: re-runs (cache hits included) collide into verified no-ops instead of duplicating roots (the E13 hazard, relocated into graph creation and discharged).
 - **`cjm_transcription_core.models`** — Data shapes for the transcription pipeline: run configuration + the run-manifest result containers. The run manifest is the pipeline's durable output record: which sources were processed, how they were segmented, and where each segment's transcription landed (capability data DBs remain the authoritative text store; the manifest records the run's shape + provenance pointers). It is a deliberate proto-bundle — the CR-20 provenance-bundle infrastructure is expected to absorb/replace it.
 - **`cjm_transcription_core.pipeline`** — The headless transcription pipeline: VAD analysis -> boundary computation -> segment cutting -> per-segment model-input conversion -> transcription, composed over capability workers via the substrate's JobQueue. Between-stage outputs are threaded manually (run job -> read result -> submit next); the per-segment fan-out rides a CR-16 ports Composition with OutputRef bindings (this module was the real-world consumer of the original submit_sequence piping gap — pass-2 evidence in claude-docs/pass-2-evidence.md). HITL approval seams use the cheapest viable form (log + optional CLI prompt) per the cores-cluster guard-rails; each seam carries its 5-field HITL-assist annotation in its docstring.
@@ -34,7 +34,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 
 - `apply_curation` _function_ — Replay one `collection-curation` op: deletes -> updates -> wires.
 - `collection_members` _function_ — A collection's member Sources (PART_OF edges; unordered by design —
-- `collection_order` _function_ — Walk the materialized order, when one exists (SG-41 read-only SQL: one
+- `collection_order` _function_ — Walk the materialized order, when one exists (typed EdgeQuery reads —
 - `confirm_collection` _function_ — Discharge a proposed collection's flag (ae3464fc: the explicit human
 - `curation_replay_handlers` _function_ — The curation verb's replay registration (unioned into
 - `file_sources` _function_ — File existing Sources into a collection (create-or-attach; the hub's
@@ -63,6 +63,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 
 ### `cjm_transcription_core.pipeline`
 
+- `acquire_speaker_turns` _function_ — Diarize the full source and persist the source-keyed turns artifact.
 - `analyze_vad` _function_ — Run VAD analysis on one model-ready audio file (task channel: vad/detect_speech).
 - `build_segment_composition` _function_ — Build the per-source fan-out composition: N independent [preprocess→]convert→(T× transcribe) pipes.
 - `collect_capability_info` _function_ — Record capability identity + data-DB pointers for the run manifest (provenance).
@@ -81,4 +82,4 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 ## Dependencies
 
 **Depends on:** `cjm-capability-primitives`, `cjm-context-graph-layer`, `cjm-context-graph-primitives`, `cjm-substrate`, `cjm-transcript-graph-schema`, `cjm-transcription-adapter-interface`
-**Used by:** `cjm-transcription-tui`
+**Used by:** `cjm-transcription-tui`, `cjm-workflow-hub-tui`
