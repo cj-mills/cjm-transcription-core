@@ -158,5 +158,6 @@ checklink/cookies.txt
 /test_files/
 /runs/
 /datasets/
+/training-runs/
 /claude-docs/
 diarization/
