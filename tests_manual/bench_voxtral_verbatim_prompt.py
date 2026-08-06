@@ -347,10 +347,10 @@ def main():
      "score": cmd_score, "all": cmd_all}[args.phase](args)
 
 
-# NOTE: the __main__ entry must stay the LAST region — add-symbol appends at
-# module tail, and canonical emit follows SLOT order (a file-level reorder is
-# reverted by the next authored write), so the guard lives in the final region
-# below; new symbols must be added BEFORE it or re-relocated (ba810a2a).
+# NOTE: the __main__ entry must stay the LAST region — canonical emit follows
+# SLOT order (a file-level reorder is reverted by the next authored write), so
+# the guard lives in the final region below. add-symbol now honors this by
+# construction (DEC 0e590ca7: new defs land BEFORE the trailing text run).
 
 
 def resolve_source(selector: str):  # -> (source_id, title)
