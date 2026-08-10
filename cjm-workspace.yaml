@@ -1,1 +1,6 @@
 name: transcription-pipeline
+# Flywheel state (DATA, not code): the CURRENT event-detection model the
+# decomp TUI's P propose-now pre-stage resolves. Update when a new run is
+# promoted (model register: v1.5 CURRENT; overlay-v1 73000552 RETIRED).
+flywheel:
+  event_training_run: trainrun_20260731_002436_6f803b12

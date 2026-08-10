@@ -31,3 +31,8 @@ capabilities:
     adapters:
       - lib: "/mnt/SN850X_8TB_EXT4/Projects/GitHub/cj-mills/cjm-speaker-diarization-adapter-interface/"
         impl: "cjm_speaker_diarization_adapter_interface.generic:GenericSpeakerDiarizationAdapter"
+      # Capability-internal task adapters (DECs 1cfe6d0f / c0378082): propose +
+      # finetune ride the task channel from the capability package itself —
+      # impl-only entries, nothing extra to install.
+      - impl: "cjm_capability_pyannote.propose:PyannoteAudioEventDetectionAdapter"
+      - impl: "cjm_capability_pyannote.finetune:PyannoteSegmentationFinetuneAdapter"
