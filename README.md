@@ -6,18 +6,35 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 
 ## Modules
 
+- **`cjm_transcription_core`**
 - **`cjm_transcription_core.boundaries`** — Wall-clock-aware segment boundary computation: group VAD speech chunks into segments cut at silence-gap midpoints. Pure logic — no capability calls. Final home of the algorithm originally validated in cjm-transcription-audio-segment's AudioSegmentService.compute_segment_boundaries (that library is retired to cj-mills_deferred/).
+- **`cjm_transcription_core.candidates`** — Candidate (capability, MODEL)-instance enumeration for the comparison screen.
 - **`cjm_transcription_core.cli`** — The CLI driver — the workflow core's first (and currently only) frontend.
 - **`cjm_transcription_core.curation`** — Collection curation vocabulary (hub v0, e5849229): the journaled update/delete
 - **`cjm_transcription_core.emission`** — Graph-root emission (CR-18 revolution 2): a completed source EMITS Source -> AudioSegment -> Transcript into the shared context graph — the graph BEGINS at transcription (where-graph-begins resolution: ingestion is the first EXTENDER that plants the root). Deterministic identity tuples make emission idempotent: re-runs (cache hits included) collide into verified no-ops instead of duplicating roots (the E13 hazard, relocated into graph creation and discharged).
+- **`cjm_transcription_core.launch`** — The shared launch surface every transcription shell drives through: the
 - **`cjm_transcription_core.models`** — Data shapes for the transcription pipeline: run configuration + the run-manifest result containers. The run manifest is the pipeline's durable output record: which sources were processed, how they were segmented, and where each segment's transcription landed (capability data DBs remain the authoritative text store; the manifest records the run's shape + provenance pointers). It is a deliberate proto-bundle — the CR-20 provenance-bundle infrastructure is expected to absorb/replace it.
 - **`cjm_transcription_core.pipeline`** — The headless transcription pipeline: VAD analysis -> boundary computation -> segment cutting -> per-segment model-input conversion -> transcription, composed over capability workers via the substrate's JobQueue. Between-stage outputs are threaded manually (run job -> read result -> submit next); the per-segment fan-out rides a CR-16 ports Composition with OutputRef bindings (this module was the real-world consumer of the original submit_sequence piping gap — pass-2 evidence in claude-docs/pass-2-evidence.md). HITL approval seams use the cheapest viable form (log + optional CLI prompt) per the cores-cluster guard-rails; each seam carries its 5-field HITL-assist annotation in its docstring.
+- **`cjm_transcription_core.probe`** — Per-segment comparison probe: transcribe ONE VAD-cut segment across every
+- **`cjm_transcription_core.results`** — Past-run results for the setup TUI: the core's own runs/*.json manifests read
+- **`cjm_transcription_core.sources`** — Source-selection state for the picker stage: a keyboard file browser plus the
+- **`cjm_transcription_core.state`** — Sidecar TUI state: last-used run settings persisted across sessions (the
 
 ## API
 
 ### `cjm_transcription_core.boundaries`
 
 - `compute_segment_boundaries` _function_ — Group VAD chunks into segments cut at silence-gap midpoints.
+
+### `cjm_transcription_core.candidates`
+
+- `candidate_directives` _function_ — Expand every installed transcription capability into its candidate space.
+- `discover_capability` _function_ — Pick a DEFAULT capability for a role by surface match.
+- `instance_id_for` _function_ — Derive an addressable instance id for a non-default (capability, MODEL) pick.
+- `manifests_with_method` _function_ — Enumerate installed capabilities whose structural surface lists `method`.
+- `model_axis` _function_ — Find a capability's MODEL config axis in its config_schema.
+- `spec_string` _function_ — Render a load directive back to the core CLI's --transcriber grammar.
+- `transcription_manifests` _function_ — Enumerate installed transcription capabilities from their manifest files.
 
 ### `cjm_transcription_core.cli`
 
@@ -52,6 +69,13 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `emit_source_graph` _function_ — Idempotently emit one source's graph root through the task channel.
 - `transcription_replay_handlers` _function_ — The transcription core's replay vocabulary (DEC 426658f1, replay stays DOMAIN-OWNED).
 
+### `cjm_transcription_core.launch`
+
+- `build_parser` _function_ — The TUI driver's argument surface (setup options + core-run passthrough).
+- `hand_off` _function_ — The shared driver tail: persist the confirmed choices, print the
+- `plan_argv` _function_ — Render a confirmed plan as headless core-CLI argv.
+- `resolve_settings` _function_ — Resolve the run-setup settings every shell shares (flags > persisted
+
 ### `cjm_transcription_core.models`
 
 - `CollectionDecl` _class_ — A collection declaration riding a run (ae3464fc: the folder-source
@@ -79,7 +103,26 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `tier1_segment_checks` _function_ — Tier-1 deterministic pre-filters for the boundary-review seam (no AI).
 - `tier1_transcript_checks` _function_ — Tier-1 deterministic pre-filters for the transcript-review seam (no AI).
 
+### `cjm_transcription_core.probe`
+
+- `SegmentProbe` _class_ — One source's cut segments + cached per-segment comparison results.
+
+### `cjm_transcription_core.results`
+
+- `RunIndex` _class_ — runs/*.json manifests loaded newest-first + the lookups the TUI paints from.
+
+### `cjm_transcription_core.sources`
+
+- `CollectionField` _class_ — Pre-run collection state for the sources stage (ae3464fc: the actor
+- `SourceBrowser` _class_ — Keyboard file-browser + ordered selection state for the sources stage.
+
+### `cjm_transcription_core.state`
+
+- `load_state` _function_ — Read this project's persisted TUI state.
+- `save_state` _function_ — Merge updates into the persisted state and write it back (best-effort:
+- `state_path` _function_ — Where this project's TUI state lives.
+
 ## Dependencies
 
 **Depends on:** `cjm-capability-primitives`, `cjm-context-graph-layer`, `cjm-context-graph-primitives`, `cjm-substrate`, `cjm-transcript-graph-schema`, `cjm-transcription-adapter-interface`
-**Used by:** `cjm-transcription-tui`, `cjm-workflow-hub-tui`
+**Used by:** `cjm-transcription-qt`, `cjm-transcription-tui`, `cjm-workflow-hub-qt`, `cjm-workflow-hub-tui`
