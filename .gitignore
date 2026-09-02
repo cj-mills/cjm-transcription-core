@@ -160,5 +160,6 @@ checklink/cookies.txt
 /datasets/
 /training-runs/
 /proposals/
+/packs/
 /claude-docs/
 diarization/
