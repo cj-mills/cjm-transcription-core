@@ -125,4 +125,4 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 ## Dependencies
 
 **Depends on:** `cjm-capability-primitives`, `cjm-context-graph-layer`, `cjm-context-graph-primitives`, `cjm-substrate`, `cjm-transcript-graph-schema`, `cjm-transcription-adapter-interface`
-**Used by:** `cjm-transcription-qt`, `cjm-transcription-tui`, `cjm-workflow-hub-qt`, `cjm-workflow-hub-tui`
+**Used by:** `cjm-transcript-correction-qt`, `cjm-transcription-qt`, `cjm-workflow-hub-qt`
