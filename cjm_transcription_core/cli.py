@@ -26,14 +26,17 @@ Then e.g.:
 import argparse
 import asyncio
 import getpass
+import json
 import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from cjm_context_graph_layer.journal import sidecar_journal_path
 from cjm_substrate.core.manager import CapabilityManager
 from cjm_substrate.core.queue import JobQueue
 from cjm_substrate.core.workspace import resolve_workspace
+from cjm_transcription_core.curation import declare_structure, structure_entries_from_map
 from cjm_transcription_core.models import CollectionDecl, PipelineConfig
 from cjm_transcription_core.pipeline import run_pipeline
 
@@ -104,6 +107,30 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
                      help="Suppress the automatic folder->collection proposal (a directory arg "
                           "otherwise proposes a collection named after the folder)")
     run.add_argument("-v", "--verbose", action="store_true", help="DEBUG-level logging")
+
+    # ---- declare-structure: the source structure map (DEC 8d9de793 clause 7) ----
+    decl = sub.add_parser(
+        "declare-structure",
+        help="Land a human-confirmed SOURCE STRUCTURE MAP (a work's part/chapter cells per "
+             "member Source) as journaled work_structure property merges")
+    decl.add_argument("--map", required=True,
+                      help="Structure-map JSON: {collection_id?, entries: [{source_id, evidence?, "
+                           "...cells}]} — cells are the work's own structure (kind / part / "
+                           "part_title / chapter / unit / title), evidence says where each came from")
+    decl.add_argument("--collection-id", default=None,
+                      help="Collection node id the map lies over (default: the document's)")
+    decl.add_argument("--manifests-dir", default=".cjm/manifests", help="Capability manifests directory")
+    decl.add_argument("--graph-capability", default="cjm-capability-graph-sqlite",
+                      help="Graph-storage capability name")
+    decl.add_argument("--graph-db-path", default=None,
+                      help="Graph db path (default: the workspace capability config)")
+    decl.add_argument("--workspace", default=None,
+                      help="Workspace root (default: CJM_WORKSPACE env, else upward walk from cwd)")
+    decl.add_argument("--actor", default=None,
+                      help="Attribution (default: human:<user> — the map is a human confirmation)")
+    decl.add_argument("--dry-run", action="store_true",
+                      help="Parse + print the entries; touch neither graph nor journal")
+    decl.add_argument("-v", "--verbose", action="store_true", help="DEBUG-level logging")
     return parser
 
 
@@ -278,6 +305,8 @@ def main(
     )
     if args.command == "run":
         return asyncio.run(run_command(args))
+    if args.command == "declare-structure":
+        return asyncio.run(declare_structure_command(args))
     raise SystemExit(f"unknown command: {args.command}")
 
 
@@ -400,3 +429,53 @@ def expand_sources_with_collections(
         decls = [CollectionDecl(title=explicit_title, member_paths=list(files),
                                 status="confirmed", actor=actor, ordered=ordered)]
     return files, decls
+
+
+async def declare_structure_command(
+    args: argparse.Namespace,  # Parsed CLI arguments for the `declare-structure` subcommand
+) -> int:  # Process exit code
+    """Execute `declare-structure`: read a structure-map document and land it
+    as `work_structure` property merges on the named Sources (the headless
+    HITL seam for a source's part/chapter map — the human confirms the
+    document, the verb journals the act; DEC 8d9de793 clause 7).
+
+    Graph plumbing mirrors `run`: workspace resolved first (CJM_WORKSPACE
+    exported), the graph capability loaded alone, --graph-db-path a
+    caller-wins config. The sidecar journal is DERIVED from the effective db
+    path (`sidecar_journal_path`), never configured. The graph-stack open is
+    the third carried copy of the 2ce81638 shape (correction-core spine,
+    hub spine) — it moves with the c3c21f99 home decision."""
+    ws = resolve_workspace(explicit=getattr(args, "workspace", None))
+    if ws is not None:
+        os.environ["CJM_WORKSPACE"] = str(ws.root)
+    doc = json.loads(Path(args.map).read_text())
+    entries = structure_entries_from_map(doc)
+    collection_id = args.collection_id or doc.get("collection_id")
+    actor = args.actor or f"human:{getpass.getuser()}"
+    if args.dry_run:
+        for e in entries:
+            print(f"{e['source_id'][:8]}  {e['structure']}  evidence={e['evidence']}")
+        print(f"dry run: {len(entries)} sources, collection {collection_id}, actor {actor}")
+        return 0
+    manager = CapabilityManager(search_paths=[Path(args.manifests_dir)])
+    configs = ({args.graph_capability: {"db_path": args.graph_db_path}}
+               if args.graph_db_path else None)
+    load_capabilities(manager, [args.graph_capability], configs=configs)
+    effective = args.graph_db_path or (
+        (manager.instances[args.graph_capability].config or {}).get("db_path"))
+    if not effective:
+        raise SystemExit("no graph db path: pass --graph-db-path, or persist one on the "
+                         f"{args.graph_capability} instance in the active workspace's config store")
+    journal_path = sidecar_journal_path(str(effective))
+    queue = JobQueue(deps=manager)
+    await queue.start()
+    try:
+        op = await declare_structure(queue, args.graph_capability, entries, actor,
+                                     journal_path=journal_path, collection_id=collection_id)
+    finally:
+        await queue.stop()
+        manager.unload_capability(args.graph_capability)
+    print(f"declared work_structure on {op['args']['sources']} sources "
+          f"(collection {collection_id}; actor {actor})")
+    print(f"journal: {journal_path}")
+    return 0

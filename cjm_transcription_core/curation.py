@@ -303,3 +303,69 @@ async def set_collection_order(
         journal_path=journal_path, actor=actor,
         args={"act": "set-order", "collection_id": coll_id,
               "members": len(ordered_member_ids)})
+
+
+def structure_entries_from_map(
+    doc: Dict[str, Any],  # A structure-map document: {"collection_id"?, "entries": [{"source_id", "evidence"?, ...cells}]}
+) -> List[Dict[str, Any]]:  # [{"source_id", "structure": {cells}, "evidence": [...]}] in document order
+    """Normalize a structure-map document into `declare_structure` entries.
+
+    The document is the human-facing shape (one row per member Source with
+    the work's cells laid flat: file / kind / part / part_title / chapter /
+    unit / title); the entry is the op-facing shape (cells folded under
+    `structure`, `evidence` beside them). Keys prefixed `_` are document
+    commentary and never land; `source_id` and `evidence` are lifted out;
+    every remaining key is a cell. A row without a `source_id` or without any
+    cell refuses loudly — a map that names nothing declares nothing."""
+    entries: List[Dict[str, Any]] = []
+    for row in doc.get("entries") or []:
+        sid = row.get("source_id")
+        if not sid:
+            raise ValueError(f"structure map row without source_id: {row!r}")
+        cells = {k: v for k, v in row.items()
+                 if k not in ("source_id", "evidence") and not str(k).startswith("_")}
+        if not cells:
+            raise ValueError(f"structure map row {sid!r} carries no cells")
+        entries.append({"source_id": sid, "structure": cells,
+                        "evidence": list(row.get("evidence") or [])})
+    return entries
+
+
+async def declare_structure(
+    queue: Any,                            # Started job queue
+    graph_id: str,                         # Graph-storage capability id
+    entries: List[Dict[str, Any]],         # [{"source_id", "structure": {cells}, "evidence": [...]}] — one per member Source
+    actor: str,                            # The declaring human (attribution; the map is human-confirmed data)
+    journal_path: Optional[str] = None,    # Sidecar journal
+    collection_id: Optional[str] = None,   # The Collection the map lies over (semantic summary only)
+) -> Dict[str, Any]:  # The journaled op
+    """Declare a SOURCE STRUCTURE MAP: the WORK's own part/chapter structure
+    laid over a collection's member Sources (DEC 8d9de793 clause 7 with the
+    e358a996 erratum). A recording's FILE ORDER and the work's PART/CHAPTER
+    structure are two structures over one source and diverge per source (one
+    audiobook folds the part readout into a chapter's file, another reads
+    section titles as files of their own), so the map is per-source DATA:
+    partly derivable from apparatus strata (the 932b78f9 latent-structure
+    class), partly human-confirmed, and every cell says which (`evidence`).
+
+    Lands as a `work_structure` property merge on each member Source — the
+    PROPERTY form, chosen knowingly as the cheap side of the properties-vs-
+    nodes question (a85327b1): the map is an ADDRESSING input (how strata,
+    segments and pre-graph notes are lined up for comparison), never the
+    deliverable's organizer, and the op journals the intent verbatim so a
+    later Part/Chapter node decomposition replays from these same ops.
+    Rides `journal_curation` (verb `collection-curation`, act
+    `declare-structure`): updates merge idempotently under replay, no new
+    handler, and a re-declaration simply overwrites the cells."""
+    updates: List[Dict[str, Any]] = []
+    for e in entries:
+        sid = e["source_id"]
+        structure = dict(e.get("structure") or {})
+        if not structure:
+            raise ValueError(f"declare_structure: entry {sid!r} carries no structure")
+        updates.append({"id": sid, "properties": {
+            "work_structure": {**structure, "evidence": list(e.get("evidence") or [])}}})
+    return await journal_curation(
+        queue, graph_id, updates=updates, journal_path=journal_path, actor=actor,
+        args={"act": "declare-structure", "collection_id": collection_id,
+              "sources": len(updates)})
