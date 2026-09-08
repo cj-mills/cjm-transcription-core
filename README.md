@@ -39,6 +39,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 ### `cjm_transcription_core.cli`
 
 - `build_parser` _function_ — Build the CLI parser (subcommands: run).
+- `declare_structure_command` _function_ — Execute `declare-structure`: read a structure-map document and land it
 - `expand_sources` _function_ — Expand CLI source arguments into the ordered media-file list for a run.
 - `expand_sources_with_collections` _function_ — Expand CLI sources AND keep the folder-source gesture as collection
 - `load_capabilities` _function_ — Discover manifests + load each requested capability.
@@ -54,12 +55,14 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `collection_order` _function_ — Walk the materialized order, when one exists (typed EdgeQuery reads —
 - `confirm_collection` _function_ — Discharge a proposed collection's flag (ae3464fc: the explicit human
 - `curation_replay_handlers` _function_ — The curation verb's replay registration (unioned into
+- `declare_structure` _function_ — Declare a SOURCE STRUCTURE MAP: the WORK's own part/chapter structure
 - `file_sources` _function_ — File existing Sources into a collection (create-or-attach; the hub's
 - `journal_curation` _function_ — Apply one curation act and journal it as a `collection-curation` op.
 - `list_collections` _function_ — Enumerate the graph's Collection nodes (the hub's grouping corpus).
 - `refile_members` _function_ — Move members between collections (the Supernova carve-out: select
 - `rename_collection` _function_ — Rename a collection — which IS merge when the new title already exists.
 - `set_collection_order` _function_ — Materialize (or repair) a collection's order — the curation op ae3464fc
+- `structure_entries_from_map` _function_ — Normalize a structure-map document into `declare_structure` entries.
 
 ### `cjm_transcription_core.emission`
 
