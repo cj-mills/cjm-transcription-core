@@ -203,3 +203,64 @@ def test_declare_structure_journals_property_merges(tmp_path):
     with pytest.raises(ValueError):
         asyncio.run(declare_structure(q2, "g", [{"source_id": "src-9", "structure": {}}], "human:tester"))
     assert q2.submitted == []
+
+
+def test_add_and_retract_reference_journal_wires_and_a_cascade_delete(tmp_path, monkeypatch):
+    """`add_reference` lands ONE Reference node + ONE HAS_REFERENCE edge through the
+    collection-curation op shape (act `add-reference`; no deletes, no updates), with a
+    (source, target)-derived node id so the same link re-added is the same node;
+    `retract_reference` is the compensating act (a cascade node delete). Both append
+    verbatim to the sidecar journal. Refusals: no target, no label. The apply leg is
+    recorded, not run (extend-verify needs a real graph; the op SHAPE is the contract)."""
+    import asyncio
+    import json
+
+    from cjm_transcription_core import curation
+    from cjm_transcription_core.curation import add_reference, retract_reference
+    from cjm_transcript_graph_schema.schema import TranscriptGraphLabels
+
+    applied = []
+
+    async def record(queue, graph_id, op):
+        applied.append((graph_id, op))
+    monkeypatch.setattr(curation, "apply_curation", record)
+
+    journal = tmp_path / "context_graph.writes.jsonl"
+    op = asyncio.run(add_reference(None, "g", "src-4", label="Dumbing Us Down (publisher page)",
+                                   url="https://newsociety.com/book/dumbing-us-down-25th-anniversary-edition/",
+                                   role="cited-work", actor="human:tester", journal_path=str(journal)))
+    assert op["verb"] == "collection-curation" and op["args"]["act"] == "add-reference"
+    assert op["args"]["source_id"] == "src-4" and op["args"]["role"] == "cited-work"
+    assert op["deletes"] == {"edge_ids": [], "node_ids": []} and op["updates"] == []
+    ref_id = op["reference_id"]
+    assert op["args"]["reference_id"] == ref_id
+    [node] = op["wires"]["nodes"]
+    [edge] = op["wires"]["edges"]
+    assert node["id"] == ref_id and node["label"] == TranscriptGraphLabels.REFERENCE == "Reference"
+    assert node["properties"] == {"source_id": "src-4", "label": "Dumbing Us Down (publisher page)",
+                                  "url": "https://newsociety.com/book/dumbing-us-down-25th-anniversary-edition/",
+                                  "notes_slug": "", "role": "cited-work", "added_by": "human:tester"}
+    assert (edge["source_id"], edge["target_id"], edge["relation_type"]) == ("src-4", ref_id, "HAS_REFERENCE")
+    assert applied and applied[0][0] == "g" and applied[0][1]["args"]["act"] == "add-reference"
+    # Same (source, target) -> same id; a different target -> a different node.
+    op2 = asyncio.run(add_reference(None, "g", "src-4", label="renamed", url=node["properties"]["url"], actor="human:tester"))
+    assert op2["reference_id"] == ref_id
+    op3 = asyncio.run(add_reference(None, "g", "src-4", label="Notes on Dumbing Us Down",
+                                    notes_slug="dumbing-us-down/ch01-notes", url="https://example.org/fallback",
+                                    role="related-notes", actor="human:tester"))
+    assert op3["reference_id"] != ref_id
+    assert op3["wires"]["nodes"][0]["properties"]["notes_slug"] == "dumbing-us-down/ch01-notes"
+    # Retract: a cascade node delete, journaled.
+    rop = asyncio.run(retract_reference(None, "g", ref_id, actor="human:tester", journal_path=str(journal)))
+    assert rop["args"] == {"act": "retract-reference", "reference_id": ref_id}
+    assert rop["deletes"] == {"edge_ids": [], "node_ids": [ref_id]} and rop["wires"] == {"nodes": [], "edges": []}
+    lines = [json.loads(l) for l in journal.read_text().splitlines() if l.strip()]
+    assert [l["args"]["act"] for l in lines] == ["add-reference", "retract-reference"]
+    assert lines[0]["wires"]["nodes"][0]["id"] == ref_id
+    # Refusals before anything is applied.
+    n_applied = len(applied)
+    with pytest.raises(ValueError):
+        asyncio.run(add_reference(None, "g", "src-4", label="x", actor="human:tester"))
+    with pytest.raises(ValueError):
+        asyncio.run(add_reference(None, "g", "src-4", label="  ", url="https://x", actor="human:tester"))
+    assert len(applied) == n_applied

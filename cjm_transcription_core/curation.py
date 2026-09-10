@@ -12,7 +12,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_context_graph_layer.grammar import make_edge, spine_edges, SpineRelations
-from cjm_context_graph_layer.identity import derive_edge_id
+from cjm_context_graph_layer.identity import derive_edge_id, derive_node_id
 from cjm_context_graph_layer.journal import journal_extend
 from cjm_context_graph_layer.ops import extend_graph, graph_task
 from cjm_context_graph_primitives.journal import append_op
@@ -369,3 +369,59 @@ async def declare_structure(
         queue, graph_id, updates=updates, journal_path=journal_path, actor=actor,
         args={"act": "declare-structure", "collection_id": collection_id,
               "sources": len(updates)})
+
+
+async def add_reference(
+    queue: Any,                            # Started job queue
+    graph_id: str,                         # Graph-storage capability id
+    source_id: str,                        # The Source (chapter unit) the link enriches
+    *,
+    label: str,                            # Reader-facing link text
+    url: str = "",                         # The public URL (also the FALLBACK target while `notes_slug` is not yet born)
+    notes_slug: str = "",                  # A notes-graph Note slug this link points at (a cross-work link: resolves to /posts/<slug>/ once born)
+    role: str = "related",                 # Open vocabulary; recommended slate: publisher-page · author-post · related-notes · cited-work
+    actor: str,                            # The adding human (attribution)
+    journal_path: Optional[str] = None,    # Sidecar journal
+) -> Dict[str, Any]:  # The journaled op, plus "reference_id"
+    """Attach a HUMAN-ADDED RESOURCE LINK to a Source as a `Reference` NODE (ruling
+    a7ca900d (3), item ae103970). A link nothing in the audio names — a publisher page,
+    the author's post, the notes for a cited work — is an enrichment of the SOURCE, so it
+    lives on the transcription graph beside the structure map and every rendering of the
+    unit carries it (the compounding rule 1701a235: never authored into a deliverable's
+    body). The node id derives from (source, target), so re-adding the same link is a
+    no-op under extend-verify; the edge is Source -HAS_REFERENCE-> Reference. A cross-work
+    link names a notes-graph slug: the deliverable renderer resolves it to the born page
+    when that exists and falls back to `url` until then (finding 962866ae's second
+    datapoint). Rides `journal_curation` (act `add-reference`): replays as wires."""
+    if not (url or notes_slug):
+        raise ValueError("add_reference: give a url and/or a notes_slug")
+    if not label.strip():
+        raise ValueError("add_reference: a reference needs a reader-facing label")
+    target = notes_slug or url
+    ref_id = derive_node_id("reference", source_id, target)
+    node = {"id": ref_id, "label": TranscriptGraphLabels.REFERENCE, "sources": [],
+            "properties": {"source_id": source_id, "label": label.strip(), "url": url,
+                           "notes_slug": notes_slug, "role": role, "added_by": actor}}
+    edge = make_edge(source_id, ref_id, "HAS_REFERENCE")
+    op = await journal_curation(
+        queue, graph_id, nodes=[node], edges=[edge], journal_path=journal_path, actor=actor,
+        args={"act": "add-reference", "source_id": source_id, "reference_id": ref_id, "role": role})
+    op["reference_id"] = ref_id
+    return op
+
+
+async def retract_reference(
+    queue: Any,                            # Started job queue
+    graph_id: str,                         # Graph-storage capability id
+    reference_id: str,                     # The Reference node to retract
+    *,
+    actor: str,                            # The retracting human (attribution)
+    journal_path: Optional[str] = None,    # Sidecar journal
+) -> Dict[str, Any]:  # The journaled op
+    """Retract a `Reference` node — the compensating act for `add_reference` (the node
+    delete cascades its HAS_REFERENCE edge). A link that MOVED is retracted and re-added:
+    a new target is a new identity. Rides `journal_curation` (act `retract-reference`);
+    an absent node is a tolerated no-op under replay."""
+    return await journal_curation(
+        queue, graph_id, delete_node_ids=[reference_id], journal_path=journal_path, actor=actor,
+        args={"act": "retract-reference", "reference_id": reference_id})

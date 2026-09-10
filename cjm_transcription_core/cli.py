@@ -36,7 +36,8 @@ from cjm_context_graph_layer.journal import sidecar_journal_path
 from cjm_substrate.core.manager import CapabilityManager
 from cjm_substrate.core.queue import JobQueue
 from cjm_substrate.core.workspace import resolve_workspace
-from cjm_transcription_core.curation import declare_structure, structure_entries_from_map
+from cjm_transcription_core.curation import (add_reference, declare_structure, retract_reference,
+                                             structure_entries_from_map)
 from cjm_transcription_core.models import CollectionDecl, PipelineConfig
 from cjm_transcription_core.pipeline import run_pipeline
 
@@ -131,6 +132,33 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     decl.add_argument("--dry-run", action="store_true",
                       help="Parse + print the entries; touch neither graph nor journal")
     decl.add_argument("-v", "--verbose", action="store_true", help="DEBUG-level logging")
+
+    # ---- add-reference / retract-reference: human-added resource links on a Source (ae103970) ----
+    def _graph_plumbing(p: argparse.ArgumentParser) -> None:  # the declare-structure graph-stack flags, shared
+        p.add_argument("--manifests-dir", default=".cjm/manifests", help="Capability manifests directory")
+        p.add_argument("--graph-capability", default="cjm-capability-graph-sqlite",
+                       help="Graph-storage capability name")
+        p.add_argument("--graph-db-path", default=None,
+                       help="Graph db path (default: the workspace capability config)")
+        p.add_argument("--workspace", default=None,
+                       help="Workspace root (default: CJM_WORKSPACE env, else upward walk from cwd)")
+        p.add_argument("--actor", default=None, help="Attribution (default: human:<user>)")
+        p.add_argument("-v", "--verbose", action="store_true", help="DEBUG-level logging")
+    addr = sub.add_parser(
+        "add-reference",
+        help="Attach a HUMAN-ADDED resource link to a Source as a Reference node (publisher page, "
+             "author post, related notes, cited work) — journaled; every rendering of the unit carries it")
+    addr.add_argument("--source-id", required=True, help="The Source node id (or unique prefix)")
+    addr.add_argument("--label", required=True, help="Reader-facing link text")
+    addr.add_argument("--url", default="", help="The public URL (the fallback target while --notes-slug is unborn)")
+    addr.add_argument("--notes-slug", default="",
+                      help="A notes-graph Note slug this link points at (cross-work link; resolves once born)")
+    addr.add_argument("--role", default="related",
+                      help="Open vocabulary; recommended: publisher-page | author-post | related-notes | cited-work")
+    _graph_plumbing(addr)
+    retr = sub.add_parser("retract-reference", help="Retract a Reference node (cascade deletes its edge) — journaled")
+    retr.add_argument("reference_id", help="The Reference node id")
+    _graph_plumbing(retr)
     return parser
 
 
@@ -307,6 +335,8 @@ def main(
         return asyncio.run(run_command(args))
     if args.command == "declare-structure":
         return asyncio.run(declare_structure_command(args))
+    if args.command in ("add-reference", "retract-reference"):
+        return asyncio.run(reference_command(args))
     raise SystemExit(f"unknown command: {args.command}")
 
 
@@ -477,5 +507,49 @@ async def declare_structure_command(
         manager.unload_capability(args.graph_capability)
     print(f"declared work_structure on {op['args']['sources']} sources "
           f"(collection {collection_id}; actor {actor})")
+    print(f"journal: {journal_path}")
+    return 0
+
+
+async def reference_command(
+    args: argparse.Namespace,  # Parsed CLI arguments for `add-reference` / `retract-reference`
+) -> int:  # Process exit code
+    """Execute `add-reference` / `retract-reference`: attach or retract a human-added
+    resource link on a Source (ruling a7ca900d (3), item ae103970) — the headless HITL
+    seam for the links nothing in the audio names. Graph plumbing = the declare-structure
+    shape (workspace resolved first, the graph capability loaded alone, --graph-db-path a
+    caller-wins config, the sidecar journal DERIVED from the effective db path) — the
+    FOURTH carried copy of the 2ce81638 open; it moves with the c3c21f99 home decision.
+    `--source-id` takes the FULL Source node id (prefix resolution is a residue)."""
+    ws = resolve_workspace(explicit=getattr(args, "workspace", None))
+    if ws is not None:
+        os.environ["CJM_WORKSPACE"] = str(ws.root)
+    actor = args.actor or f"human:{getpass.getuser()}"
+    manager = CapabilityManager(search_paths=[Path(args.manifests_dir)])
+    configs = ({args.graph_capability: {"db_path": args.graph_db_path}}
+               if args.graph_db_path else None)
+    load_capabilities(manager, [args.graph_capability], configs=configs)
+    effective = args.graph_db_path or (
+        (manager.instances[args.graph_capability].config or {}).get("db_path"))
+    if not effective:
+        raise SystemExit("no graph db path: pass --graph-db-path, or persist one on the "
+                         f"{args.graph_capability} instance in the active workspace's config store")
+    journal_path = sidecar_journal_path(str(effective))
+    queue = JobQueue(deps=manager)
+    await queue.start()
+    try:
+        if args.command == "add-reference":
+            op = await add_reference(queue, args.graph_capability, args.source_id, label=args.label,
+                                     url=args.url, notes_slug=args.notes_slug, role=args.role,
+                                     actor=actor, journal_path=journal_path)
+            print(f"added reference {op['reference_id']} on source {args.source_id} "
+                  f"(role {args.role}; actor {actor})")
+        else:
+            await retract_reference(queue, args.graph_capability, args.reference_id,
+                                    actor=actor, journal_path=journal_path)
+            print(f"retracted reference {args.reference_id} (actor {actor})")
+    finally:
+        await queue.stop()
+        manager.unload_capability(args.graph_capability)
     print(f"journal: {journal_path}")
     return 0
