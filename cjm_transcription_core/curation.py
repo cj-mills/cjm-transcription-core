@@ -374,7 +374,7 @@ async def declare_structure(
 async def add_reference(
     queue: Any,                            # Started job queue
     graph_id: str,                         # Graph-storage capability id
-    source_id: str,                        # The Source (chapter unit) the link enriches
+    source_id: str,                        # The Source (chapter unit) the link enriches — or the work's Collection for a WORK-level link (the work page's Resources; item ebb77107)
     *,
     label: str,                            # Reader-facing link text
     url: str = "",                         # The public URL (also the FALLBACK target while `notes_slug` is not yet born)
