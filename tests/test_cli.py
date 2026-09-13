@@ -180,3 +180,8 @@ def test_chunk_verbs_parse_and_config_overrides():
         p.parse_args(["rerun-chunk", "--manifest", "m.json"])  # --transcriber required
     with pytest.raises(SystemExit):
         parse_config_overrides(["novalue"])
+
+
+def test_runaway_census_include_escalated_flag():
+    a = build_parser().parse_args(["runaway-census", "--include-escalated"])
+    assert a.include_escalated and not a.include_superseded

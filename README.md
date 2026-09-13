@@ -46,6 +46,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `derive_manifest` _function_ — Start a DERIVED manifest (ruling 910f3692 (1)): a copy of the parent under a NEW
 - `fetch_transcript_rows` _function_ — Pull every Transcript's census inputs through the graph capability's marked
 - `flagged_chunks` _function_ — The inspection lane's jump index: which chunks of a run carry a flagged variant,
+- `is_external_transcriber` _function_ — Whether a transcriber name is an external landing's (the `/manual` marker).
 - `land_chunk_transcript` _function_ — Land one chunk's variant through the task channel and journal the delta —
 - `load_run_manifest` _function_ — Load a transcription-core run manifest (${WS}/ recorded paths resolve at load,
 - `prior_config_hash` _function_ — The config hash of the variant this transcriber currently has on the chunk: a

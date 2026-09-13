@@ -12,7 +12,8 @@ from cjm_context_graph_layer.journal import journal_extend
 from cjm_context_graph_layer.ops import graph_task
 from cjm_substrate.core.workspace import relativize_recorded, resolve_recorded_tree
 from cjm_transcript_graph_schema.schema import (audio_rendition_node_id, audio_segment_node_id,
-                                                source_node_id, transcript_node_id, TranscriptNode)
+                                                EXTERNAL_TRANSCRIBER_MARKER, source_node_id,
+                                                transcript_node_id, TranscriptNode)
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +329,8 @@ def census_rows(
     transcriber: Optional[str] = None,     # Restrict the flagged rows to one transcriber (context rows still count)
     collections: Optional[List[str]] = None,  # Restrict to these collection titles (None = all)
     include_superseded: bool = False,      # True = superseded variants are listed too (marked); default: not live
-) -> List[Dict[str, Any]]:  # Flagged rows: each carries `reasons` (list) + `words_per_second`
+    include_escalated: bool = False,       # True = chunks already carrying an external (/manual) variant are listed too (marked `escalated`)
+) -> List[Dict[str, Any]]:  # Flagged rows: each carries `reasons` (list) + `words_per_second` + `escalated`
     """The runaway census (pure): which LIVE chunk variants need a better transcription.
 
     Reasons: `degenerate` (the 0.0.49 guard's marker on a new run), `oversized`
@@ -336,7 +338,10 @@ def census_rows(
     chunk's duration > max_words_per_second), `disagreement` (two live transcribers
     on one rendition differ by more than `disagreement_ratio` in word count — the
     SHORTER side is the suspect on a runaway, so both rows are listed with the
-    ratio). A superseded variant is NOT live: excluded unless asked for."""
+    ratio). A superseded variant is NOT live: excluded unless asked for. A chunk
+    that already carries a LIVE external variant (`<model id>/manual`) is
+    ESCALATED — covered by the operator — and drops out unless asked for; the
+    external variant itself is never flagged (it is the operator's answer)."""
     wanted = set(c for c in (collections or []))
     live = [r for r in rows if include_superseded or not r.get("superseded")]
     if wanted:
@@ -346,6 +351,12 @@ def census_rows(
         by_rendition.setdefault(str(r.get("rendition_id")), []).append(r)
     flagged: List[Dict[str, Any]] = []
     for r in live:
+        if is_external_transcriber(str(r.get("transcriber") or "")):
+            continue
+        escalated = any(is_external_transcriber(str(p.get("transcriber") or "")) and not p.get("superseded")
+                        for p in by_rendition.get(str(r.get("rendition_id")), []))
+        if escalated and not include_escalated:
+            continue
         dur = float(r.get("end") or 0.0) - float(r.get("start") or 0.0)
         words = float(r.get("words") or 0)
         wps = (words / dur) if dur > 0 else 0.0
@@ -371,8 +382,15 @@ def census_rows(
             continue
         flagged.append({**r, "duration": dur, "words_per_second": round(wps, 2),
                         "disagreement_ratio": (None if ratio is None else (round(ratio, 1) if ratio != float("inf") else "inf")),
-                        "reasons": reasons})
+                        "reasons": reasons, "escalated": escalated})
     return flagged
+
+
+def is_external_transcriber(
+    name: str,  # A transcriber name (manifest `transcripts` key / Transcript.transcriber)
+) -> bool:  # True for an operator-landed external variant (`<model id>/manual`)
+    """Whether a transcriber name is an external landing's (the `/manual` marker)."""
+    return name.endswith(EXTERNAL_TRANSCRIBER_MARKER)
 
 
 def summarize_census(
@@ -431,11 +449,14 @@ def rows_from_manifest(
 
 def flagged_chunks(
     manifest: Dict[str, Any],  # A loaded run manifest
-    **thresholds: Any,         # census_rows keyword thresholds (max_chars, max_words_per_second, ...)
+    **thresholds: Any,         # census_rows keyword thresholds (max_chars, max_words_per_second, include_escalated, ...)
 ) -> Dict[Tuple[int, int], List[Dict[str, Any]]]:  # (source_index, seg_index) -> that chunk's flagged rows, in manifest order
     """The inspection lane's jump index: which chunks of a run carry a flagged variant,
     keyed by (source index, segment index) in manifest order (ruling 8a9b9639 (1):
-    total failures first — the census's reasons — but ANY chunk stays escalatable)."""
+    total failures first — the census's reasons — but ANY chunk stays escalatable).
+    A chunk the operator already escalated (an external variant beside the flagged
+    one) is out of the index unless `include_escalated=True` — then its rows carry
+    `escalated: True` so the lane can show it as covered."""
     out: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
     for f in census_rows(rows_from_manifest(manifest), **thresholds):
         out.setdefault((int(f["source_index"]), int(f["seg_index"])), []).append(f)

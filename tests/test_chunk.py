@@ -290,3 +290,35 @@ def test_render_escalation_prompt_fills_context_and_hashes_the_template():
         render_escalation_prompt(m, 0, 7)
     with pytest.raises(ValueError):
         render_escalation_prompt(m, 5, 0)
+
+
+def test_census_treats_an_external_variant_as_coverage():
+    """cf0b91d6 follow-up (2026-09-12 field test): a chunk that already carries a LIVE
+    external (/manual) variant is ESCALATED — out of the census / the lane's jump index
+    unless asked for (then marked); the external variant itself is never flagged; a
+    superseded external variant does not count as coverage."""
+    from cjm_transcription_core.chunk import flagged_chunks, is_external_transcriber, rows_from_manifest
+    rows = _rows()
+    ext = {**rows[3], "transcriber": "gemini-3.8-flash/manual", "chars": 2400, "words": 446,
+           "transcript_id": "T-l33-1-gemini", "degenerate": 0}
+    flagged = census_rows(rows + [ext])
+    ids = {f["transcript_id"] for f in flagged}
+    assert "T-l33-1-voxtral" not in ids and "T-l33-1-whisper--small" not in ids, "the covered chunk drops out"
+    assert "T-l33-1-gemini" not in ids, "the operator's answer is never flagged"
+    assert "T-l33-2-voxtral" in ids, "other chunks unaffected"
+    marked = census_rows(rows + [ext], include_escalated=True)
+    by = {f["transcript_id"]: f for f in marked}
+    assert by["T-l33-1-voxtral"]["escalated"] is True and by["T-l33-2-voxtral"]["escalated"] is False
+    assert "T-l33-1-gemini" not in by
+    gone = census_rows(rows + [{**ext, "superseded": 1}])
+    assert "T-l33-1-voxtral" in {f["transcript_id"] for f in gone}, "a superseded external variant is not coverage"
+    assert is_external_transcriber("gemini-3.8-flash/manual") and not is_external_transcriber("whisper--small")
+    # Manifest side: the lane's index.
+    m = _manifest()
+    m["sources"][0]["segments"][1]["transcripts"]["gemini-3.8-flash/manual"] = {
+        "job_id": "x", "text": "the real words " * 100, "metadata": {"landing": {"producer": "external"}},
+        "config_hash": "sha256:ext"}
+    assert (0, 1) not in flagged_chunks(m)
+    allf = flagged_chunks(m, include_escalated=True)
+    assert (0, 1) in allf and all(r["escalated"] for r in allf[(0, 1)])
+    assert not any(r["transcriber"].endswith("/manual") for r in allf[(0, 1)])

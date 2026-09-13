@@ -229,6 +229,8 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     rc.add_argument("--max-words-per-second", type=float, default=8.0, help="Implausible speech rate over the chunk")
     rc.add_argument("--disagreement-ratio", type=float, default=4.0, help="Two-transcriber word-count ratio that flags")
     rc.add_argument("--include-superseded", action="store_true", help="List superseded variants too (marked)")
+    rc.add_argument("--include-escalated", action="store_true",
+                    help="List chunks already covered by an external (/manual) transcript too (marked ESCALATED)")
     rc.add_argument("--json", default=None, metavar="PATH", help="Write the flagged rows + summary as JSON")
     rc.add_argument("--limit", type=int, default=50, help="Rows to print (the JSON carries all)")
     _graph_plumbing(rc)
@@ -920,7 +922,8 @@ async def runaway_census_command(
         manager.unload_capability(args.graph_capability)
     flagged = census_rows(rows, max_chars=args.max_chars, max_words_per_second=args.max_words_per_second,
                           disagreement_ratio=args.disagreement_ratio, transcriber=args.transcriber,
-                          collections=args.collection, include_superseded=args.include_superseded)
+                          collections=args.collection, include_superseded=args.include_superseded,
+                          include_escalated=args.include_escalated)
     scoped = [r for r in rows if not args.collection or (r.get("collection") or "") in set(args.collection)]
     summary = summarize_census(flagged, scoped)
     print(f"graph: {effective}")
@@ -933,7 +936,8 @@ async def runaway_census_command(
         print(f"  {f.get('collection') or '-':20.20s} seg {int(f.get('seg_index') or 0):4d} "
               f"{float(f.get('start') or 0):8.1f}-{float(f.get('end') or 0):8.1f}s  {str(f.get('transcriber')):26.26s} "
               f"{int(f.get('chars') or 0):7d}ch {f.get('words_per_second'):6.1f}w/s  {','.join(f.get('reasons') or [])}"
-              + ("  SUPERSEDED" if f.get("superseded") else "") + f"  {Path(str(f.get('source_path') or '')).name}")
+              + ("  SUPERSEDED" if f.get("superseded") else "") + ("  ESCALATED" if f.get("escalated") else "")
+              + f"  {Path(str(f.get('source_path') or '')).name}")
     if len(flagged) > args.limit:
         print(f"  … {len(flagged) - args.limit} more (see --json)")
     if args.json:
@@ -943,3 +947,7 @@ async def runaway_census_command(
             "disagreement_ratio": args.disagreement_ratio}, "summary": summary, "flagged": flagged}, indent=2))
         print(f"json: {args.json}")
     return 0
+
+
+if __name__ == "__main__":  # `python -m cjm_transcription_core.cli …` = the console script (the qt lane runs the verbs this way)
+    raise SystemExit(main())
