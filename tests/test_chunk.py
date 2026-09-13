@@ -325,3 +325,23 @@ def test_census_treats_an_external_variant_as_coverage():
     allf = flagged_chunks(m, include_escalated=True)
     assert (0, 1) in allf and all(r["escalated"] for r in allf[(0, 1)])
     assert not any(r["transcriber"].endswith("/manual") for r in allf[(0, 1)])
+
+
+def test_census_hides_retired_collections_unless_asked():
+    # ruling a7617bd4 / item eaefebd2: a retired collection is hidden, never cascaded.
+    rows = _rows()
+    for r in rows:
+        if r.get("collection") == "GPU MODE":
+            r["collection_status"] = "retired"
+    assert census_rows(rows) == [], "every flagged row lived in the now-retired collection"
+    assert len(census_rows(rows, include_retired=True)) == 6
+    assert census_rows(rows, collections=["GPU MODE"]) == []
+
+
+def test_retire_collection_parses():
+    from cjm_transcription_core.cli import build_parser
+    a = build_parser().parse_args(["retire-collection", "GPU MODE_OLD", "--reason", "re-downloaded as mp4",
+                                   "--graph-db-path", "/tmp/g.db"])
+    assert a.command == "retire-collection" and a.collection == "GPU MODE_OLD" and not a.unretire
+    b = build_parser().parse_args(["runaway-census", "--include-retired"])
+    assert b.include_retired

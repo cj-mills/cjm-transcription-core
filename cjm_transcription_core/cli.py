@@ -169,6 +169,15 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     retr = sub.add_parser("retract-reference", help="Retract a Reference node (cascade deletes its edge) — journaled")
     retr.add_argument("reference_id", help="The Reference node id")
     _graph_plumbing(retr)
+    # ---- retire-collection: a journaled FACT, never a cascade (ruling a7617bd4, item eaefebd2) ----
+    rcol = sub.add_parser(
+        "retire-collection",
+        help="Retire a Collection as a journaled fact (status=retired): pickers and the runaway "
+             "census hide it; its Sources, spines and corrections stay untouched. --unretire restores")
+    rcol.add_argument("collection", help="Collection node id (prefix ok) or exact title")
+    rcol.add_argument("--reason", default="", help="Why (journaled; e.g. re-downloaded as a fresh collection)")
+    rcol.add_argument("--unretire", action="store_true", help="Restore a retired collection to confirmed")
+    _graph_plumbing(rcol)
 
     # ---- chunk-grain re-runs, external landings, the runaway census (cf0b91d6) ----
     def _chunk_plumbing(p: argparse.ArgumentParser) -> None:  # shared by rerun-chunk / add-transcript
@@ -231,6 +240,8 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     rc.add_argument("--include-superseded", action="store_true", help="List superseded variants too (marked)")
     rc.add_argument("--include-escalated", action="store_true",
                     help="List chunks already covered by an external (/manual) transcript too (marked ESCALATED)")
+    rc.add_argument("--include-retired", action="store_true",
+                    help="Count sources of RETIRED collections too (default: hidden, ruling a7617bd4)")
     rc.add_argument("--json", default=None, metavar="PATH", help="Write the flagged rows + summary as JSON")
     rc.add_argument("--limit", type=int, default=50, help="Rows to print (the JSON carries all)")
     _graph_plumbing(rc)
@@ -410,6 +421,8 @@ def main(
         return asyncio.run(run_command(args))
     if args.command == "declare-structure":
         return asyncio.run(declare_structure_command(args))
+    if args.command == "retire-collection":
+        return asyncio.run(retire_collection_command(args))
     if args.command in ("add-reference", "retract-reference"):
         return asyncio.run(reference_command(args))
     if args.command == "rerun-chunk":
@@ -629,6 +642,56 @@ async def reference_command(
             await retract_reference(queue, args.graph_capability, args.reference_id,
                                     actor=actor, journal_path=journal_path)
             print(f"retracted reference {args.reference_id} (actor {actor})")
+    finally:
+        await queue.stop()
+        manager.unload_capability(args.graph_capability)
+    print(f"journal: {journal_path}")
+    return 0
+
+
+async def retire_collection_command(
+    args: argparse.Namespace,  # Parsed CLI arguments for `retire-collection`
+) -> int:  # Process exit code
+    """Execute `retire-collection` (ruling a7617bd4, item eaefebd2): resolve the
+    collection by id prefix or exact title, then journal the retirement fact (or its
+    reversal). Same graph plumbing as the reference verbs; nothing cascades."""
+    from cjm_transcription_core.curation import list_collections, retire_collection
+    ws = resolve_workspace(explicit=getattr(args, "workspace", None))
+    if ws is not None:
+        os.environ["CJM_WORKSPACE"] = str(ws.root)
+    actor = args.actor or f"human:{getpass.getuser()}"
+    manager = CapabilityManager(search_paths=[Path(args.manifests_dir)])
+    configs = ({args.graph_capability: {"db_path": args.graph_db_path}}
+               if args.graph_db_path else None)
+    load_capabilities(manager, [args.graph_capability], configs=configs)
+    effective = args.graph_db_path or (
+        (manager.instances[args.graph_capability].config or {}).get("db_path"))
+    if not effective:
+        raise SystemExit("no graph db path: pass --graph-db-path, or persist one on the "
+                         f"{args.graph_capability} instance in the active workspace's config store")
+    journal_path = sidecar_journal_path(str(effective))
+    queue = JobQueue(deps=manager)
+    await queue.start()
+    try:
+        cols = await list_collections(queue, args.graph_capability)
+        sel = args.collection.strip()
+        hits = [c for c in cols if c["id"] == sel or c["id"].startswith(sel)] or \
+               [c for c in cols if c["title"].lower() == sel.lower()]
+        if len(hits) != 1:
+            print(f"REFUSED: {args.collection!r} matches {len(hits)} collection(s): "
+                  f"{[(c['id'][:8], c['title'], c['status']) for c in cols]}")
+            return 2
+        coll = hits[0]
+        if not args.unretire and coll["status"] == "retired":
+            print(f"REFUSED: {coll['title']!r} is already retired")
+            return 2
+        if args.unretire and coll["status"] != "retired":
+            print(f"REFUSED: {coll['title']!r} is not retired (status {coll['status']})")
+            return 2
+        await retire_collection(queue, args.graph_capability, coll["id"], actor=actor,
+                                reason=args.reason, journal_path=journal_path, unretire=args.unretire)
+        print(f"{'restored' if args.unretire else 'retired'} collection {coll['id'][:8]} {coll['title']!r}"
+              + (f" ({args.reason})" if args.reason and not args.unretire else "") + f" (actor {actor})")
     finally:
         await queue.stop()
         manager.unload_capability(args.graph_capability)
@@ -923,8 +986,9 @@ async def runaway_census_command(
     flagged = census_rows(rows, max_chars=args.max_chars, max_words_per_second=args.max_words_per_second,
                           disagreement_ratio=args.disagreement_ratio, transcriber=args.transcriber,
                           collections=args.collection, include_superseded=args.include_superseded,
-                          include_escalated=args.include_escalated)
-    scoped = [r for r in rows if not args.collection or (r.get("collection") or "") in set(args.collection)]
+                          include_escalated=args.include_escalated, include_retired=args.include_retired)
+    scoped = [r for r in rows if (not args.collection or (r.get("collection") or "") in set(args.collection))
+              and (args.include_retired or str(r.get("collection_status") or "") != "retired")]
     summary = summarize_census(flagged, scoped)
     print(f"graph: {effective}")
     print(f"transcripts: {len(rows)} total, {sum(1 for r in rows if not r.get('superseded'))} live; "

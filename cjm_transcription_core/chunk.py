@@ -290,10 +290,12 @@ WITH tr AS (
          json_extract(s.properties, '$.path') AS source_path,
          json_extract(s.properties, '$.content_hash') AS content_hash,
          (SELECT json_extract(c.properties, '$.title') FROM edges p JOIN nodes c ON c.id = p.target_id
-            WHERE p.source_id = s.id AND p.relation_type = 'PART_OF' AND c.label = 'Collection' LIMIT 1) AS collection
+            WHERE p.source_id = s.id AND p.relation_type = 'PART_OF' AND c.label = 'Collection' LIMIT 1) AS collection,
+         (SELECT json_extract(c.properties, '$.status') FROM edges p JOIN nodes c ON c.id = p.target_id
+            WHERE p.source_id = s.id AND p.relation_type = 'PART_OF' AND c.label = 'Collection' LIMIT 1) AS collection_status
   FROM nodes s WHERE s.label = 'Source'
 )
-SELECT src.collection, src.source_id, src.source_path, src.content_hash,
+SELECT src.collection, src.collection_status, src.source_id, src.source_path, src.content_hash,
        aseg.aseg_id AS audio_segment, aseg.seg_index, aseg.start, aseg."end",
        tr.rendition_id, tr.transcriber, tr.config_hash, tr.transcript_id,
        tr.chars, tr.words, tr.degenerate, tr.producer, tr.superseded
@@ -331,6 +333,7 @@ def census_rows(
     collections: Optional[List[str]] = None,  # Restrict to these collection titles (None = all)
     include_superseded: bool = False,      # True = superseded variants are listed too (marked); default: not live
     include_escalated: bool = False,       # True = chunks already carrying an external (/manual) variant are listed too (marked `escalated`)
+    include_retired: bool = False,         # True = sources of RETIRED collections (ruling a7617bd4) count too; default: hidden
 ) -> List[Dict[str, Any]]:  # Flagged rows: each carries `reasons` (list) + `words_per_second` + `escalated`
     """The runaway census (pure): which LIVE chunk variants need a better transcription.
 
@@ -345,6 +348,8 @@ def census_rows(
     external variant itself is never flagged (it is the operator's answer)."""
     wanted = set(c for c in (collections or []))
     live = [r for r in rows if include_superseded or not r.get("superseded")]
+    if not include_retired:  # a retired collection is hidden, never cascaded (a7617bd4)
+        live = [r for r in live if str(r.get("collection_status") or "") != "retired"]
     if wanted:
         live = [r for r in live if (r.get("collection") or "") in wanted]
     by_rendition: Dict[str, List[Dict[str, Any]]] = {}

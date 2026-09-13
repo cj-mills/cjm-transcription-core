@@ -9,6 +9,7 @@ handler (DEC 426658f1 posture), so the sidecar journal stays the source of truth
 directly — the hub drives THIS vocabulary."""
 
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_context_graph_layer.grammar import make_edge, spine_edges, SpineRelations
@@ -201,6 +202,37 @@ async def confirm_collection(
                                                 "actor": actor}}],
         journal_path=journal_path, actor=actor,
         args={"act": "confirm", "collection_id": coll_id})
+
+
+async def retire_collection(
+    queue: Any,          # Started job queue
+    graph_id: str,       # Graph-storage capability id
+    coll_id: str,        # Collection node id to retire (or restore)
+    actor: str,          # The retiring human (attribution)
+    reason: str = "",    # Why (journaled; e.g. re-downloaded as a fresh collection)
+    journal_path: Optional[str] = None,  # Sidecar journal
+    unretire: bool = False,  # Restore a retired collection to confirmed
+) -> Dict[str, Any]:  # The journaled op
+    """Retire a Collection as a journaled FACT (ruling a7617bd4, item eaefebd2): status
+    becomes `retired` and pickers / the census skip it; its Sources, spines and
+    corrections stay on the graph untouched (a retired collection is hidden, never
+    cascaded). Reversible with `unretire` (status back to confirmed)."""
+    props: Dict[str, Any] = ({"status": "confirmed", "retired": None} if unretire else
+                             {"status": "retired",
+                              "retired": {"reason": reason or "", "actor": actor, "ts": time.time()}})
+    return await journal_curation(
+        queue, graph_id,
+        updates=[{"id": coll_id, "properties": props}],
+        journal_path=journal_path, actor=actor,
+        args={"act": "unretire-collection" if unretire else "retire-collection",
+              "collection_id": coll_id, "reason": reason or ""})
+
+
+def live_collections(
+    collections: List[Dict[str, Any]],  # list_collections rows
+) -> List[Dict[str, Any]]:  # The rows whose status is not `retired`
+    """Filter retired collections out of a listing (pure; the pickers' default view)."""
+    return [c for c in collections if str(c.get("status") or "") != "retired"]
 
 
 async def rename_collection(
