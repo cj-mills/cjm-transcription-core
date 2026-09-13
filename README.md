@@ -71,6 +71,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `parse_transcriber_spec` _function_ — Parse one `--transcriber` spec into a (capability, MODEL)-instance load directive.
 - `reference_command` _function_ — Execute `add-reference` / `retract-reference`: attach or retract a human-added
 - `rerun_chunk_command` _function_ — Execute `rerun-chunk` (cf0b91d6 part 1; ruling 8a9b9639 chunk-targeted, never wholesale).
+- `retire_collection_command` _function_ — Execute `retire-collection` (ruling a7617bd4, item eaefebd2): resolve the
 - `run_command` _function_ — Execute the `run` subcommand: full pipeline over the given audio files.
 - `runaway_census_command` _function_ — Execute `runaway-census` (cf0b91d6 part 3): the LIVE chunk variants in need of a
 
@@ -86,8 +87,10 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `file_sources` _function_ — File existing Sources into a collection (create-or-attach; the hub's
 - `journal_curation` _function_ — Apply one curation act and journal it as a `collection-curation` op.
 - `list_collections` _function_ — Enumerate the graph's Collection nodes (the hub's grouping corpus).
+- `live_collections` _function_ — Filter retired collections out of a listing (pure; the pickers' default view).
 - `refile_members` _function_ — Move members between collections (the Supernova carve-out: select
 - `rename_collection` _function_ — Rename a collection — which IS merge when the new title already exists.
+- `retire_collection` _function_ — Retire a Collection as a journaled FACT (ruling a7617bd4, item eaefebd2): status
 - `retract_reference` _function_ — Retract a `Reference` node — the compensating act for `add_reference` (the node
 - `set_collection_order` _function_ — Materialize (or repair) a collection's order — the curation op ae3464fc
 - `structure_entries_from_map` _function_ — Normalize a structure-map document into `declare_structure` entries.
