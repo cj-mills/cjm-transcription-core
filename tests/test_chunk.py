@@ -183,18 +183,19 @@ def test_derived_manifest_replaces_only_the_touched_entry_and_registers_a_new_tr
 
 
 def _rows():
-    def row(coll, src, idx, transcriber, chars, words, *, degenerate=0, superseded=0, start=0.0, end=220.0):
+    def row(coll, src, idx, transcriber, chars, words, *, degenerate=0, superseded=0, timestamp_leak=0, start=0.0, end=220.0):
         return {"collection": coll, "source_id": f"S-{src}", "source_path": f"/m/{src}.mp4", "content_hash": f"sha256:{src}",
                 "audio_segment": f"A-{src}-{idx}", "seg_index": idx, "start": start, "end": end,
                 "rendition_id": f"R-{src}-{idx}", "transcriber": transcriber, "config_hash": "h",
                 "transcript_id": f"T-{src}-{idx}-{transcriber}", "chars": chars, "words": words,
-                "degenerate": degenerate, "producer": None, "superseded": superseded}
+                "degenerate": degenerate, "timestamp_leak": timestamp_leak, "producer": None, "superseded": superseded}
     return [
         row("GPU MODE", "l33", 0, "whisper--small", 2000, 400), row("GPU MODE", "l33", 0, "voxtral", 2100, 410),
         row("GPU MODE", "l33", 1, "whisper--small", 2154, 420), row("GPU MODE", "l33", 1, "voxtral", 124835, 24965),  # runaway
         row("GPU MODE", "l33", 2, "whisper--small", 1900, 380), row("GPU MODE", "l33", 2, "voxtral", 900, 169, degenerate=1),  # guarded
         row("GPU MODE", "l33", 3, "whisper--small", 100, 25), row("GPU MODE", "l33", 3, "voxtral", 30, 4),  # silence-ish: below min_words? hi=25 >= 20, lo=4 -> ratio 6.25
         row("GPU MODE_OLD", "old", 0, "voxtral", 30000, 6000, superseded=1),  # superseded: not live
+        row("GPU MODE", "l33", 4, "whisper--small", 1500, 300), row("GPU MODE", "l33", 4, "voxtral", 3100, 640, timestamp_leak=1),  # '[ 0m2s22ms ]' spans
         row("Dumbing Us Down", "dud", 0, "whisper--small", 2000, 400), row("Dumbing Us Down", "dud", 0, "voxtral", 2050, 405),
     ]
 
@@ -203,7 +204,9 @@ def test_census_flags_runaways_degenerate_and_disagreement_and_excludes_supersed
     rows = _rows()
     flagged = census_rows(rows)
     by_id = {f["transcript_id"]: f for f in flagged}
-    assert set(by_id) == {"T-l33-1-voxtral", "T-l33-1-whisper--small", "T-l33-2-voxtral", "T-l33-3-voxtral", "T-l33-3-whisper--small"}
+    assert set(by_id) == {"T-l33-1-voxtral", "T-l33-1-whisper--small", "T-l33-2-voxtral", "T-l33-3-voxtral", "T-l33-3-whisper--small",
+                          "T-l33-4-voxtral"}
+    assert by_id["T-l33-4-voxtral"]["reasons"] == ["timestamp_leak"], "per-word timestamp spans are a format failure, not prose"
     assert by_id["T-l33-1-voxtral"]["reasons"] == ["oversized", "implausible_rate", "disagreement"]
     assert by_id["T-l33-1-voxtral"]["words_per_second"] == pytest.approx(24965 / 220, abs=0.01)
     assert by_id["T-l33-1-whisper--small"]["reasons"] == ["disagreement"], "the peer is listed with the ratio"
@@ -217,12 +220,12 @@ def test_census_flags_runaways_degenerate_and_disagreement_and_excludes_supersed
     assert {f["transcriber"] for f in census_rows(rows, transcriber="voxtral")} == {"voxtral"}
     assert census_rows(rows, collections=["Dumbing Us Down"]) == []
     assert [f["transcript_id"] for f in census_rows(rows, collections=["GPU MODE"], transcriber="voxtral", disagreement_ratio=1000)] == [
-        "T-l33-1-voxtral", "T-l33-2-voxtral"]
+        "T-l33-1-voxtral", "T-l33-2-voxtral", "T-l33-4-voxtral"]
     assert "oversized" not in census_rows(rows, max_chars=200000, transcriber="voxtral")[0]["reasons"]
     # The roll-up: live totals + flagged by reason per collection.
     summary = summarize_census(flagged, rows)
-    assert summary["GPU MODE"]["live"] == 8 and summary["GPU MODE"]["flagged"] == 5
-    assert summary["GPU MODE"]["by_reason"]["oversized"] == 1 and summary["GPU MODE"]["by_transcriber"]["voxtral"] == 3
+    assert summary["GPU MODE"]["live"] == 10 and summary["GPU MODE"]["flagged"] == 6
+    assert summary["GPU MODE"]["by_reason"]["oversized"] == 1 and summary["GPU MODE"]["by_transcriber"]["voxtral"] == 4
     assert summary["GPU MODE_OLD"] == {"flagged": 0, "live": 0, "by_reason": {}, "by_transcriber": {}}
     assert summary["Dumbing Us Down"]["flagged"] == 0 and summary["Dumbing Us Down"]["live"] == 2
 

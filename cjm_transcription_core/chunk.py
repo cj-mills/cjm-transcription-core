@@ -269,6 +269,7 @@ WITH tr AS (
               ELSE length(json_extract(n.properties, '$.text'))
                    - length(replace(json_extract(n.properties, '$.text'), ' ', '')) + 1 END AS words,
          (json_extract(n.properties, '$.metadata.degenerate_tail') IS NOT NULL) AS degenerate,
+         (instr(coalesce(json_extract(n.properties, '$.text'), ''), 'ms ]') > 0) AS timestamp_leak,
          json_extract(n.properties, '$.metadata.landing.producer') AS producer,
          EXISTS (SELECT 1 FROM edges s WHERE s.target_id = n.id AND s.relation_type = 'SUPERSEDES') AS superseded
   FROM nodes n WHERE n.label = 'Transcript'
@@ -363,6 +364,8 @@ def census_rows(
         reasons: List[str] = []
         if r.get("degenerate"):
             reasons.append("degenerate")
+        if r.get("timestamp_leak"):
+            reasons.append("timestamp_leak")  # the model emitted '[ 0m2s22ms ]' spans instead of prose (2026-09-12 field sighting)
         if int(r.get("chars") or 0) > max_chars:
             reasons.append("oversized")
         if wps > max_words_per_second:
