@@ -152,3 +152,31 @@ def test_expand_sources_with_collections(tmp_path):
     assert none_decls == []
     with pytest.raises(SystemExit):
         expand_sources_with_collections([str(d)], explicit_title="X", no_collection=True)
+
+
+def test_chunk_verbs_parse_and_config_overrides():
+    """cf0b91d6: rerun-chunk / add-transcript / runaway-census parse with the shared chunk +
+    graph plumbing; --transcriber-config values JSON-parse when they can."""
+    from cjm_transcription_core.cli import parse_config_overrides
+    p = build_parser()
+    a = p.parse_args(["rerun-chunk", "--manifest", "runs/run_x.json", "--transcriber", "cjm-capability-voxtral-hf",
+                      "--flagged", "--source", "Bitblas", "--segment", "9", "--segment", "10",
+                      "--transcriber-config", "max_new_tokens=4000", "--transcriber-config", "language=en",
+                      "--reason", "runaway", "--dry-run", "--graph-db-path", "/g.db"])
+    assert a.command == "rerun-chunk" and a.flagged and a.segment == [9, 10] and a.source == "Bitblas"
+    assert parse_config_overrides(a.transcriber_config) == {"max_new_tokens": 4000, "language": "en"}
+    assert a.max_chars == 20000 and a.max_words_per_second == 8.0 and a.disagreement_ratio == 4.0
+    assert a.graph_capability == "cjm-capability-graph-sqlite" and a.graph_db_path == "/g.db" and a.dry_run
+    b = p.parse_args(["add-transcript", "--manifest", "runs/run_x.json", "--source", "0", "--segment", "3",
+                      "--model-id", "gemini-2.5-pro", "--text-file", "-", "--prompt-file", "p.txt",
+                      "--text-source", "gemini web ui"])
+    assert b.command == "add-transcript" and b.model_id == "gemini-2.5-pro" and b.text_file == "-"
+    assert b.prompt_file == "p.txt" and b.prompt_hash is None and b.reason is None
+    c = p.parse_args(["runaway-census", "--collection", "GPU MODE", "--collection", "GPU MODE Streams",
+                      "--transcriber", "cjm-capability-voxtral-hf", "--json", "/tmp/c.json", "--limit", "5"])
+    assert c.command == "runaway-census" and c.collection == ["GPU MODE", "GPU MODE Streams"]
+    assert c.json == "/tmp/c.json" and c.limit == 5 and not c.include_superseded
+    with pytest.raises(SystemExit):
+        p.parse_args(["rerun-chunk", "--manifest", "m.json"])  # --transcriber required
+    with pytest.raises(SystemExit):
+        parse_config_overrides(["novalue"])

@@ -6,9 +6,10 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 
 ## Modules
 
-- **`cjm_transcription_core`**
+- **`cjm_transcription_core.__init__`**
 - **`cjm_transcription_core.boundaries`** — Wall-clock-aware segment boundary computation: group VAD speech chunks into segments cut at silence-gap midpoints. Pure logic — no capability calls. Final home of the algorithm originally validated in cjm-transcription-audio-segment's AudioSegmentService.compute_segment_boundaries (that library is retired to cj-mills_deferred/).
 - **`cjm_transcription_core.candidates`** — Candidate (capability, MODEL)-instance enumeration for the comparison screen.
+- **`cjm_transcription_core.chunk`** — Chunk-grain re-runs, external landings and the runaway census (work item cf0b91d6; rulings 9ffce5f7 · 8a9b9639 · 910f3692): ONE landing, two producers — a local transcriber re-run of one AudioSegment's rendition, or an operator-pasted external transcript — lands a Transcript variant under the EXISTING AudioSegment with provenance, SUPERSEDES the prior variant for that (rendition, transcriber), journals the delta, and writes a DERIVED run manifest (parent_run_id + per-entry config_hash) the decomp consumes; the census names the chunks in need (degenerate-tail markers on new runs, oversized / implausible words-per-second text on old ones, extreme two-transcriber disagreement) and never counts a superseded variant as live.
 - **`cjm_transcription_core.cli`** — The CLI driver — the workflow core's first (and currently only) frontend.
 - **`cjm_transcription_core.curation`** — Collection curation vocabulary (hub v0, e5849229): the journaled update/delete
 - **`cjm_transcription_core.emission`** — Graph-root emission (CR-18 revolution 2): a completed source EMITS Source -> AudioSegment -> Transcript into the shared context graph — the graph BEGINS at transcription (where-graph-begins resolution: ingestion is the first EXTENDER that plants the root). Deterministic identity tuples make emission idempotent: re-runs (cache hits included) collide into verified no-ops instead of duplicating roots (the E13 hazard, relocated into graph creation and discharged).
@@ -36,20 +37,45 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `spec_string` _function_ — Render a load directive back to the core CLI's --transcriber grammar.
 - `transcription_manifests` _function_ — Enumerate installed transcription capabilities from their manifest files.
 
+### `cjm_transcription_core.chunk`
+
+- `apply_chunk_update` _function_ — Replace ONE chunk's entry for ONE transcriber in the derived manifest.
+- `build_chunk_landing` _function_ — Build the landing payload for ONE chunk (pure; no capability calls).
+- `census_rows` _function_ — The runaway census (pure): which LIVE chunk variants need a better transcription.
+- `chunks_from_census` _function_ — Map census rows onto the manifest's chunks by (Source id, segment index) — the
+- `derive_manifest` _function_ — Start a DERIVED manifest (ruling 910f3692 (1)): a copy of the parent under a NEW
+- `fetch_transcript_rows` _function_ — Pull every Transcript's census inputs through the graph capability's marked
+- `flagged_chunks` _function_ — The inspection lane's jump index: which chunks of a run carry a flagged variant,
+- `land_chunk_transcript` _function_ — Land one chunk's variant through the task channel and journal the delta —
+- `load_run_manifest` _function_ — Load a transcription-core run manifest (${WS}/ recorded paths resolve at load,
+- `prior_config_hash` _function_ — The config hash of the variant this transcriber currently has on the chunk: a
+- `prompt_hash_of` _function_ — Hash a prompt template — the prompt is DATA (f304d31d) and its hash rides the
+- `render_escalation_prompt` _function_ — Render the escalation prompt WITH CONTEXT for one chunk (ruling 8a9b9639 (3):
+- `rows_from_manifest` _function_ — Census inputs from a run manifest alone (no graph): the qt inspection lane's
+- `save_manifest` _function_ — Write the derived manifest (the same recording contract as RunManifest.save).
+- `select_chunks` _function_ — Resolve a chunk selection against the manifest (pure).
+- `summarize_census` _function_ — Per-collection roll-up of the census (the closing evidence for 56a802b3 is a
+
 ### `cjm_transcription_core.cli`
 
+- `add_transcript_command` _function_ — Execute `add-transcript` (cf0b91d6 part 2; ruling 9ffce5f7 (1)): land an
 - `build_parser` _function_ — Build the CLI parser (subcommands: run).
 - `declare_structure_command` _function_ — Execute `declare-structure`: read a structure-map document and land it
 - `expand_sources` _function_ — Expand CLI source arguments into the ordered media-file list for a run.
 - `expand_sources_with_collections` _function_ — Expand CLI sources AND keep the folder-source gesture as collection
 - `load_capabilities` _function_ — Discover manifests + load each requested capability.
 - `main` _function_ — CLI entry point (console script: `cjm-transcription-core`).
+- `parse_config_overrides` _function_ — Parse repeatable KEY=VALUE config overrides (`--transcriber-config`).
 - `parse_max_concurrent` _function_ — Parse repeatable `--max-concurrent NAME=N` values into a per-capability cap map.
 - `parse_transcriber_spec` _function_ — Parse one `--transcriber` spec into a (capability, MODEL)-instance load directive.
+- `reference_command` _function_ — Execute `add-reference` / `retract-reference`: attach or retract a human-added
+- `rerun_chunk_command` _function_ — Execute `rerun-chunk` (cf0b91d6 part 1; ruling 8a9b9639 chunk-targeted, never wholesale).
 - `run_command` _function_ — Execute the `run` subcommand: full pipeline over the given audio files.
+- `runaway_census_command` _function_ — Execute `runaway-census` (cf0b91d6 part 3): the LIVE chunk variants in need of a
 
 ### `cjm_transcription_core.curation`
 
+- `add_reference` _function_ — Attach a HUMAN-ADDED RESOURCE LINK to a Source as a `Reference` NODE (ruling
 - `apply_curation` _function_ — Replay one `collection-curation` op: deletes -> updates -> wires.
 - `collection_members` _function_ — A collection's member Sources (PART_OF edges; unordered by design —
 - `collection_order` _function_ — Walk the materialized order, when one exists (typed EdgeQuery reads —
@@ -61,6 +87,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `list_collections` _function_ — Enumerate the graph's Collection nodes (the hub's grouping corpus).
 - `refile_members` _function_ — Move members between collections (the Supernova carve-out: select
 - `rename_collection` _function_ — Rename a collection — which IS merge when the new title already exists.
+- `retract_reference` _function_ — Retract a `Reference` node — the compensating act for `add_reference` (the node
 - `set_collection_order` _function_ — Materialize (or repair) a collection's order — the curation op ae3464fc
 - `structure_entries_from_map` _function_ — Normalize a structure-map document into `declare_structure` entries.
 

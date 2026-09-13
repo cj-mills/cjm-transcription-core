@@ -29,17 +29,27 @@ import getpass
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_context_graph_layer.journal import sidecar_journal_path
+from cjm_substrate.core.journal_store import SubstrateEventType
 from cjm_substrate.core.manager import CapabilityManager
 from cjm_substrate.core.queue import JobQueue
 from cjm_substrate.core.workspace import resolve_workspace
+from cjm_transcript_graph_schema.schema import external_config_hash, external_transcriber_name
+from cjm_transcription_core.chunk import (apply_chunk_update, census_rows, chunks_from_census,
+                                          derive_manifest, fetch_transcript_rows,
+                                          land_chunk_transcript, load_run_manifest,
+                                          prior_config_hash, PRODUCER_EXTERNAL, PRODUCER_RERUN,
+                                          prompt_hash_of, save_manifest, select_chunks,
+                                          summarize_census)
 from cjm_transcription_core.curation import (add_reference, declare_structure, retract_reference,
                                              structure_entries_from_map)
-from cjm_transcription_core.models import CollectionDecl, PipelineConfig
-from cjm_transcription_core.pipeline import run_pipeline
+from cjm_transcription_core.models import CollectionDecl, new_run_id, PipelineConfig
+from cjm_transcription_core.pipeline import (_journal_run_event, collect_capability_info,
+                                             run_pipeline, submit_and_wait)
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +169,69 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     retr = sub.add_parser("retract-reference", help="Retract a Reference node (cascade deletes its edge) — journaled")
     retr.add_argument("reference_id", help="The Reference node id")
     _graph_plumbing(retr)
+
+    # ---- chunk-grain re-runs, external landings, the runaway census (cf0b91d6) ----
+    def _chunk_plumbing(p: argparse.ArgumentParser) -> None:  # shared by rerun-chunk / add-transcript
+        p.add_argument("--manifest", required=True,
+                       help="The PARENT transcription run manifest (runs/run_*.json); never patched — "
+                            "the landing writes a DERIVED manifest beside it (ruling 910f3692)")
+        p.add_argument("--source", default=None,
+                       help="Source selector: an index, a content-hash prefix, or a source_path substring "
+                            "(default: every source in the manifest)")
+        p.add_argument("--segment", action="append", type=int, default=None, metavar="N",
+                       help="Segment index within the selected source(s); REPEATABLE (default: all)")
+        p.add_argument("--reason", default=None,
+                       help="Why this landing happens (journaled; default: runaway for a re-run, escalation for a paste)")
+        p.add_argument("--output", default=None,
+                       help="Derived-manifest path (default: <runs dir of the parent>/<new run id>.json)")
+        p.add_argument("--dry-run", action="store_true", help="Resolve the targets and print them; touch nothing")
+        _graph_plumbing(p)
+    rr = sub.add_parser(
+        "rerun-chunk",
+        help="Re-transcribe selected chunks (AudioSegments) of a past run with ONE transcriber, cache "
+             "bypassed; each new Transcript variant lands under the existing AudioSegment and "
+             "SUPERSEDES the prior variant; a derived manifest records the landings")
+    rr.add_argument("--transcriber", required=True,
+                    help="The manifest's transcriber key to re-run (e.g. cjm-capability-voxtral-hf or whisper--small); "
+                         "it reloads with the manifest's recorded config for that instance")
+    rr.add_argument("--transcriber-config", action="append", default=None, metavar="KEY=VALUE",
+                    help="Config override on top of the recorded config, REPEATABLE (JSON-parsed values)")
+    rr.add_argument("--flagged", action="store_true",
+                    help="Target = the runaway census's flagged chunks for this transcriber within the "
+                         "manifest's sources (intersected with --source/--segment when given)")
+    rr.add_argument("--max-chars", type=int, default=20000, help="Census: oversized-text threshold")
+    rr.add_argument("--max-words-per-second", type=float, default=8.0, help="Census: implausible speech rate")
+    rr.add_argument("--disagreement-ratio", type=float, default=4.0, help="Census: two-transcriber word-count ratio")
+    rr.add_argument("--fail-fast", action="store_true", help="Stop at the first failed chunk (default: record + continue)")
+    rr.add_argument("--sysmon-capability", default=None, help="monitor capability for GPU attribution (loaded first)")
+    _chunk_plumbing(rr)
+    at = sub.add_parser(
+        "add-transcript",
+        help="Land an operator-pasted EXTERNAL transcript for ONE chunk as a third transcriber "
+             "(<model id>/manual) with provenance — the same landing a re-run uses")
+    at.add_argument("--model-id", required=True, help="The external model that produced the text (e.g. gemini-2.5-pro)")
+    at.add_argument("--text-file", required=True, help="File holding the pasted transcript text ('-' = stdin)")
+    at.add_argument("--prompt-file", default=None,
+                    help="The prompt template used (hashed into the variant's config hash; the prompt is data)")
+    at.add_argument("--prompt-hash", default=None, help="A precomputed prompt hash instead of --prompt-file")
+    at.add_argument("--text-source", default="paste",
+                    help="Where the text came from (e.g. 'gemini web ui'); recorded in the landing provenance")
+    _chunk_plumbing(at)
+    rc = sub.add_parser(
+        "runaway-census",
+        help="List the LIVE chunk variants that need a better transcription: degenerate-tail markers "
+             "(new runs), oversized / implausible words-per-second text (old runs), extreme "
+             "two-transcriber disagreement; superseded variants are not live")
+    rc.add_argument("--collection", action="append", default=None, metavar="TITLE",
+                    help="Restrict to a collection title; REPEATABLE (default: all)")
+    rc.add_argument("--transcriber", default=None, help="Restrict the flagged rows to one transcriber")
+    rc.add_argument("--max-chars", type=int, default=20000, help="Oversized-text threshold")
+    rc.add_argument("--max-words-per-second", type=float, default=8.0, help="Implausible speech rate over the chunk")
+    rc.add_argument("--disagreement-ratio", type=float, default=4.0, help="Two-transcriber word-count ratio that flags")
+    rc.add_argument("--include-superseded", action="store_true", help="List superseded variants too (marked)")
+    rc.add_argument("--json", default=None, metavar="PATH", help="Write the flagged rows + summary as JSON")
+    rc.add_argument("--limit", type=int, default=50, help="Rows to print (the JSON carries all)")
+    _graph_plumbing(rc)
     return parser
 
 
@@ -337,6 +410,12 @@ def main(
         return asyncio.run(declare_structure_command(args))
     if args.command in ("add-reference", "retract-reference"):
         return asyncio.run(reference_command(args))
+    if args.command == "rerun-chunk":
+        return asyncio.run(rerun_chunk_command(args))
+    if args.command == "add-transcript":
+        return asyncio.run(add_transcript_command(args))
+    if args.command == "runaway-census":
+        return asyncio.run(runaway_census_command(args))
     raise SystemExit(f"unknown command: {args.command}")
 
 
@@ -552,4 +631,315 @@ async def reference_command(
         await queue.stop()
         manager.unload_capability(args.graph_capability)
     print(f"journal: {journal_path}")
+    return 0
+
+
+def parse_config_overrides(
+    items: Optional[List[str]],  # KEY=VALUE strings (values JSON-parsed when they parse, else kept as strings)
+) -> Dict[str, Any]:  # Override dict
+    """Parse repeatable KEY=VALUE config overrides (`--transcriber-config`)."""
+    out: Dict[str, Any] = {}
+    for item in items or []:
+        if "=" not in item:
+            raise SystemExit(f"--transcriber-config expects KEY=VALUE, got {item!r}")
+        k, v = item.split("=", 1)
+        try:
+            out[k.strip()] = json.loads(v)
+        except ValueError:
+            out[k.strip()] = v
+    return out
+
+
+def _chunk_graph_target(
+    args: argparse.Namespace,  # Parsed args carrying --graph-capability / --graph-db-path
+    parent: Dict[str, Any],    # The loaded parent manifest (its `graph` block is the recorded target)
+) -> Tuple[str, str]:  # (graph capability name, effective db path)
+    """The landing's graph target: the flags win, else the parent manifest's recorded
+    emission target (the derived manifest inherits it). The explicit-db-path rule
+    (027bbe56) is honoured by the manifest carrying the path it emitted into."""
+    recorded = parent.get("graph") or {}
+    cap = args.graph_capability or recorded.get("capability") or "cjm-capability-graph-sqlite"
+    db = args.graph_db_path or recorded.get("db_path")
+    if not db:
+        raise SystemExit("no graph db path: the parent manifest recorded no emission target — pass --graph-db-path")
+    return str(cap), str(db)
+
+
+def _print_targets(
+    targets: List[Tuple[int, Dict[str, Any], Dict[str, Any]]],  # (source_index, source_entry, segment_entry) rows
+) -> None:
+    """Print the resolved chunk targets (one line each)."""
+    for si, src, seg in targets:
+        print(f"  src {si:3d} seg {int(seg.get('index', -1)):4d}  {float(seg.get('start', 0)):8.1f}-{float(seg.get('end', 0)):8.1f}s  "
+              f"{Path(str(src.get('source_path') or '')).name}")
+
+
+async def rerun_chunk_command(
+    args: argparse.Namespace,  # Parsed CLI arguments for `rerun-chunk`
+) -> int:  # Process exit code (0 = every target landed)
+    """Execute `rerun-chunk` (cf0b91d6 part 1; ruling 8a9b9639 chunk-targeted, never wholesale).
+
+    Reloads ONE transcriber under the manifest's recorded instance config (+ overrides),
+    runs it on each target chunk's model-input rendition with the cache bypassed, lands
+    the new Transcript variant under the existing AudioSegment (SUPERSEDES the prior
+    variant), journals RUN_STARTED / RUN_FINISHED under a fresh run id, and writes a
+    DERIVED manifest (parent untouched; per-entry config_hash) the decomp consumes."""
+    ws = resolve_workspace(explicit=getattr(args, "workspace", None))
+    if ws is not None:
+        os.environ["CJM_WORKSPACE"] = str(ws.root)
+    actor = args.actor or f"cli:{getpass.getuser()}"
+    reason = args.reason or "runaway"
+    manifest_path = Path(args.manifest)
+    parent = load_run_manifest(manifest_path)
+    transcriber = args.transcriber
+    cap = (parent.get("capabilities") or {}).get(transcriber)
+    if cap is None:
+        raise SystemExit(f"transcriber {transcriber!r} is not in the manifest's capabilities "
+                         f"({sorted(parent.get('capabilities') or {})})")
+    config = {**dict(cap.get("config") or {}), **parse_config_overrides(args.transcriber_config)}
+    directive = {"capability": str(cap.get("name") or transcriber), "instance_id": transcriber, "config": config}
+    graph_cap, db_path = _chunk_graph_target(args, parent)
+    targets = select_chunks(parent, source=args.source, segments=args.segment)
+    if not args.flagged:
+        if args.dry_run:
+            print(f"targets ({len(targets)}) for {transcriber} from {manifest_path}:")
+            _print_targets(targets)
+            return 0
+    manager = CapabilityManager(search_paths=[Path(args.manifests_dir)],
+                                sysmon_capability_name=args.sysmon_capability)
+    load_order = ([args.sysmon_capability] if args.sysmon_capability else []) + [graph_cap]
+    if not args.dry_run:
+        load_order.append(directive)
+    load_capabilities(manager, load_order, configs={graph_cap: {"db_path": db_path}})
+    loaded_ids = [i["instance_id"] if isinstance(i, dict) else i for i in load_order]
+    journal_path = sidecar_journal_path(db_path)
+    queue = JobQueue(deps=manager, sysmon_capability_name=args.sysmon_capability)
+    await queue.start()
+    failures: List[Dict[str, Any]] = []
+    landed = 0
+    degenerate = 0
+    run_id = new_run_id()
+    out = (Path(args.output) if args.output else manifest_path.parent / f"{run_id}.json")
+    try:
+        if args.flagged:
+            rows = await fetch_transcript_rows(queue, graph_cap)
+            flagged = census_rows(rows, max_chars=args.max_chars,
+                                  max_words_per_second=args.max_words_per_second,
+                                  disagreement_ratio=args.disagreement_ratio, transcriber=transcriber)
+            # A variant the 0.0.49 guard already truncated (`degenerate` as its ONLY
+            # reason) is an ESCALATION candidate, not a re-run target — re-running it
+            # under the same guard would loop again; the census keeps listing it.
+            rerunnable = [f for f in flagged if set(f.get("reasons") or []) - {"degenerate"}]
+            census_targets = chunks_from_census(parent, rerunnable, transcriber)
+            keep = {(si, int(seg.get("index", -1))) for si, _, seg in targets}
+            targets = [t for t in census_targets if (t[0], int(t[2].get("index", -1))) in keep]
+            print(f"census: {len(flagged)} flagged {transcriber} variants graph-wide; "
+                  f"{len(targets)} within this manifest's selection")
+        if args.dry_run:
+            print(f"targets ({len(targets)}) for {transcriber} from {manifest_path}:")
+            _print_targets(targets)
+            return 0
+        if not targets:
+            print("no targets — nothing to re-run")
+            return 0
+        queue.set_run_context(run_id=run_id, actor=actor)
+        _journal_run_event(manager, SubstrateEventType.RUN_STARTED.value, run_id, actor, {
+            "core": "cjm-transcription-core", "kind": "rerun-chunk",
+            "parent_run_id": parent.get("run_id"), "transcriber": transcriber,
+            "chunks": len(targets), "reason": reason, "graph_capability": graph_cap,
+        })
+        info = collect_capability_info(manager, [transcriber])
+        new_hash = str((info.get(transcriber) or {}).get("config_hash") or "")
+        if not new_hash:
+            raise SystemExit(f"could not read the effective config hash of {transcriber!r}")
+        derived = derive_manifest(parent, run_id=run_id, parent_path=manifest_path, kind="rerun-chunk")
+        print(f"re-running {len(targets)} chunk(s) with {transcriber} (config {new_hash[:19]}…) -> {out}")
+        for n, (si, src, seg) in enumerate(targets, 1):
+            idx = int(seg.get("index", -1))
+            job_id = f"{run_id}_src{si}_seg{idx:04d}_rerun"
+            label = f"[{n}/{len(targets)}] src {si} seg {idx} {Path(str(src.get('source_path') or '')).name}"
+            try:
+                result = await submit_and_wait(
+                    queue, transcriber, audio=str(seg.get("model_input_path") or ""), job_id=job_id,
+                    source_start_time=float(seg.get("start", 0.0)), source_end_time=float(seg.get("end", 0.0)),
+                    task="transcription", method="transcribe", control={"force": True})
+                text = str(getattr(result, "text", "") or "")
+                metadata = dict(getattr(result, "metadata", None) or {})
+                prior = prior_config_hash(parent, seg, transcriber)
+                landing = {"producer": PRODUCER_RERUN, "reason": reason, "parent_run_id": parent.get("run_id"),
+                           "actor": actor, "landed_at": time.time()}
+                rec = await land_chunk_transcript(
+                    queue, graph_cap, src, seg, transcriber=transcriber, config_hash=new_hash, text=text,
+                    metadata={**metadata, "landing": landing}, prior_config_hash=prior,
+                    producer=PRODUCER_RERUN, reason=reason, actor=actor, run_id=run_id,
+                    journal_path=journal_path)
+                apply_chunk_update(derived, si, idx, transcriber, {
+                    "job_id": job_id, "text": text, "metadata": {**metadata, "landing": landing},
+                    "config_hash": new_hash,
+                    "landing": {**landing, "transcript_id": rec["transcript"], "supersedes": rec["supersedes"]}})
+                landed += 1
+                save_manifest(derived, out, workspace=ws)  # crash-safe: every landing is on disk
+                tail = metadata.get("degenerate_tail")
+                if tail:
+                    degenerate += 1
+                words = len(text.split())
+                print(f"{label}: {words} words" + (f"  DEGENERATE tail cut ({tail.get('phrase')!r} × {tail.get('repeats')})" if tail else "")
+                      + f"  {'supersedes ' + str(rec['supersedes'])[:8] if rec['supersedes'] else 'no prior variant'}")
+            except Exception as e:  # record + continue unless --fail-fast; the derived manifest keeps what landed
+                failures.append({"source_index": si, "segment_index": idx, "error": str(e)})
+                print(f"{label}: FAILED — {e}")
+                if args.fail_fast:
+                    break
+        derived.setdefault("derivation", {})["failures"] = failures
+        save_manifest(derived, out, workspace=ws)
+        _journal_run_event(manager, SubstrateEventType.RUN_FINISHED.value, run_id, actor, {
+            "core": "cjm-transcription-core", "kind": "rerun-chunk", "parent_run_id": parent.get("run_id"),
+            "transcriber": transcriber, "chunks": len(targets), "landed": landed,
+            "degenerate": degenerate, "failed": len(failures), "manifest": str(out),
+        })
+    finally:
+        await queue.stop()
+        for iid in reversed(loaded_ids):
+            try:
+                manager.unload_capability(iid)
+            except Exception as e:  # Best-effort teardown; never mask the run's outcome
+                logger.warning(f"unload {iid} failed: {e}")
+    print(f"derived manifest: {out}")
+    print(f"landed {landed}/{len(targets)} chunk(s); degenerate tails cut: {degenerate}; failed: {len(failures)}")
+    print(f"journal: {journal_path}")
+    return 0 if not failures else 1
+
+
+async def add_transcript_command(
+    args: argparse.Namespace,  # Parsed CLI arguments for `add-transcript`
+) -> int:  # Process exit code
+    """Execute `add-transcript` (cf0b91d6 part 2; ruling 9ffce5f7 (1)): land an
+    operator-pasted external transcript for ONE chunk as a third transcriber
+    (`<model id>/manual`, config hash = (model id, prompt hash)), the operator as actor,
+    through the SAME landing a re-run uses; a derived manifest registers the transcriber
+    so decomp folds it where it has text."""
+    ws = resolve_workspace(explicit=getattr(args, "workspace", None))
+    if ws is not None:
+        os.environ["CJM_WORKSPACE"] = str(ws.root)
+    actor = args.actor or f"human:{getpass.getuser()}"
+    reason = args.reason or "escalation"
+    manifest_path = Path(args.manifest)
+    parent = load_run_manifest(manifest_path)
+    targets = select_chunks(parent, source=args.source, segments=args.segment)
+    if len(targets) != 1:
+        raise SystemExit(f"add-transcript lands ONE chunk; the selection resolves to {len(targets)} "
+                         "(give --source and one --segment)")
+    (si, src, seg) = targets[0]
+    idx = int(seg.get("index", -1))
+    if args.text_file == "-":
+        import sys
+        text = sys.stdin.read()
+    else:
+        text = Path(args.text_file).read_text()
+    text = text.strip()
+    if not text:
+        raise SystemExit("add-transcript: the text is empty")
+    if args.prompt_file and args.prompt_hash:
+        raise SystemExit("give --prompt-file OR --prompt-hash, not both")
+    prompt_hash = args.prompt_hash or (prompt_hash_of(Path(args.prompt_file).read_text()) if args.prompt_file else "")
+    tname = external_transcriber_name(args.model_id)
+    chash = external_config_hash(args.model_id, prompt_hash)
+    graph_cap, db_path = _chunk_graph_target(args, parent)
+    if args.dry_run:
+        print(f"would land {len(text.split())} words as {tname} (config {chash[:19]}…) on:")
+        _print_targets(targets)
+        return 0
+    manager = CapabilityManager(search_paths=[Path(args.manifests_dir)])
+    load_capabilities(manager, [graph_cap], configs={graph_cap: {"db_path": db_path}})
+    journal_path = sidecar_journal_path(db_path)
+    queue = JobQueue(deps=manager)
+    await queue.start()
+    run_id = new_run_id()
+    out = (Path(args.output) if args.output else manifest_path.parent / f"{run_id}.json")
+    try:
+        queue.set_run_context(run_id=run_id, actor=actor)
+        _journal_run_event(manager, SubstrateEventType.RUN_STARTED.value, run_id, actor, {
+            "core": "cjm-transcription-core", "kind": "add-transcript", "parent_run_id": parent.get("run_id"),
+            "transcriber": tname, "chunks": 1, "reason": reason, "graph_capability": graph_cap,
+        })
+        landing = {"producer": PRODUCER_EXTERNAL, "reason": reason, "parent_run_id": parent.get("run_id"),
+                   "actor": actor, "landed_at": time.time(), "model_id": args.model_id,
+                   "prompt_hash": prompt_hash, "text_source": args.text_source}
+        metadata = {"model": args.model_id, "source_start_time": float(seg.get("start", 0.0)),
+                    "source_end_time": float(seg.get("end", 0.0)), "landing": landing}
+        prior = prior_config_hash(parent, seg, tname)
+        rec = await land_chunk_transcript(
+            queue, graph_cap, src, seg, transcriber=tname, config_hash=chash, text=text, metadata=metadata,
+            prior_config_hash=prior, producer=PRODUCER_EXTERNAL, reason=reason, actor=actor, run_id=run_id,
+            journal_path=journal_path, node_actor=actor, method="external-landing")
+        derived = derive_manifest(parent, run_id=run_id, parent_path=manifest_path, kind="add-transcript")
+        apply_chunk_update(derived, si, idx, tname, {
+            "job_id": f"{run_id}_src{si}_seg{idx:04d}_external", "text": text, "metadata": metadata,
+            "config_hash": chash, "landing": {**landing, "transcript_id": rec["transcript"], "supersedes": rec["supersedes"]}},
+            capability_info={"name": tname, "version": "manual", "db_path": None, "config_hash": chash,
+                             "config": {"model_id": args.model_id, "prompt_hash": prompt_hash,
+                                        "text_source": args.text_source}})
+        save_manifest(derived, out, workspace=ws)
+        _journal_run_event(manager, SubstrateEventType.RUN_FINISHED.value, run_id, actor, {
+            "core": "cjm-transcription-core", "kind": "add-transcript", "parent_run_id": parent.get("run_id"),
+            "transcriber": tname, "chunks": 1, "landed": 1, "manifest": str(out),
+        })
+    finally:
+        await queue.stop()
+        manager.unload_capability(graph_cap)
+    print(f"landed {len(text.split())} words as {tname} on src {si} seg {idx} "
+          f"({Path(str(src.get('source_path') or '')).name}): transcript {rec['transcript']}"
+          + (f" supersedes {rec['supersedes']}" if rec["supersedes"] else "")
+          + f"  (nodes +{rec['nodes_added']} verified {rec['nodes_verified']}, edges +{rec['edges_added']})")
+    print(f"derived manifest: {out}")
+    print(f"journal: {journal_path}")
+    return 0
+
+
+async def runaway_census_command(
+    args: argparse.Namespace,  # Parsed CLI arguments for `runaway-census`
+) -> int:  # Process exit code (0 always — a report)
+    """Execute `runaway-census` (cf0b91d6 part 3): the LIVE chunk variants in need of a
+    better transcription, per collection — the target list of `rerun-chunk --flagged`,
+    the app's flagged-chunk lane rows, and the closing evidence for check 56a802b3 (a
+    zero on every live collection)."""
+    ws = resolve_workspace(explicit=getattr(args, "workspace", None))
+    if ws is not None:
+        os.environ["CJM_WORKSPACE"] = str(ws.root)
+    manager = CapabilityManager(search_paths=[Path(args.manifests_dir)])
+    configs = ({args.graph_capability: {"db_path": args.graph_db_path}} if args.graph_db_path else None)
+    load_capabilities(manager, [args.graph_capability], configs=configs)
+    effective = args.graph_db_path or (
+        (manager.instances[args.graph_capability].config or {}).get("db_path"))
+    queue = JobQueue(deps=manager)
+    await queue.start()
+    try:
+        rows = await fetch_transcript_rows(queue, args.graph_capability)
+    finally:
+        await queue.stop()
+        manager.unload_capability(args.graph_capability)
+    flagged = census_rows(rows, max_chars=args.max_chars, max_words_per_second=args.max_words_per_second,
+                          disagreement_ratio=args.disagreement_ratio, transcriber=args.transcriber,
+                          collections=args.collection, include_superseded=args.include_superseded)
+    scoped = [r for r in rows if not args.collection or (r.get("collection") or "") in set(args.collection)]
+    summary = summarize_census(flagged, scoped)
+    print(f"graph: {effective}")
+    print(f"transcripts: {len(rows)} total, {sum(1 for r in rows if not r.get('superseded'))} live; "
+          f"flagged: {len(flagged)}" + (f" ({args.transcriber})" if args.transcriber else ""))
+    for coll, c in sorted(summary.items(), key=lambda kv: (-kv[1]['flagged'], kv[0])):
+        reasons = ", ".join(f"{k} {v}" for k, v in sorted(c["by_reason"].items()))
+        print(f"  {coll or '(no collection)':32s} flagged {c['flagged']:4d} / live {c['live']:5d}" + (f"   {reasons}" if reasons else ""))
+    for f in flagged[: args.limit]:
+        print(f"  {f.get('collection') or '-':20.20s} seg {int(f.get('seg_index') or 0):4d} "
+              f"{float(f.get('start') or 0):8.1f}-{float(f.get('end') or 0):8.1f}s  {str(f.get('transcriber')):26.26s} "
+              f"{int(f.get('chars') or 0):7d}ch {f.get('words_per_second'):6.1f}w/s  {','.join(f.get('reasons') or [])}"
+              + ("  SUPERSEDED" if f.get("superseded") else "") + f"  {Path(str(f.get('source_path') or '')).name}")
+    if len(flagged) > args.limit:
+        print(f"  … {len(flagged) - args.limit} more (see --json)")
+    if args.json:
+        Path(args.json).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.json).write_text(json.dumps({"graph_db_path": effective, "thresholds": {
+            "max_chars": args.max_chars, "max_words_per_second": args.max_words_per_second,
+            "disagreement_ratio": args.disagreement_ratio}, "summary": summary, "flagged": flagged}, indent=2))
+        print(f"json: {args.json}")
     return 0

@@ -152,8 +152,11 @@ def transcription_replay_handlers() -> Dict[str, Any]:  # verb -> async handler(
     `derivation`, and the shared handler keeps that collision legal).
     `collection-declaration` is the Collection-layer emission (ae3464fc);
     `collection-curation` (updates/deletes, hub v0) replays via its own
-    domain-owned handler, unioned here."""
-    handlers = wires_handlers("source-emission", "derivation", "collection-declaration")
+    domain-owned handler, unioned here. `transcript-landing` (cf0b91d6) is the
+    chunk-grain landing — a re-run's or an external transcript's Transcript
+    variant + its DERIVED_FROM / SUPERSEDES edges — wires like the rest."""
+    handlers = wires_handlers("source-emission", "derivation", "collection-declaration",
+                              "transcript-landing")
     handlers.update(curation_replay_handlers())
     return handlers
 
