@@ -45,8 +45,9 @@ from cjm_transcription_core.chunk import (apply_chunk_update, census_rows, chunk
                                           prior_config_hash, PRODUCER_EXTERNAL, PRODUCER_RERUN,
                                           prompt_hash_of, save_manifest, select_chunks,
                                           summarize_census, text_shape, wordwrap_warning)
-from cjm_transcription_core.curation import (add_reference, declare_structure, retract_reference,
-                                             structure_entries_from_map)
+from cjm_transcription_core.curation import (add_reference, bind_source_urls, collection_members,
+                                             declare_structure, retract_reference,
+                                             structure_entries_from_map, url_bindings_from_playlist)
 from cjm_transcription_core.models import CollectionDecl, new_run_id, PipelineConfig
 from cjm_transcription_core.pipeline import (_journal_run_event, collect_capability_info,
                                              run_pipeline, submit_and_wait)
@@ -169,6 +170,18 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     retr = sub.add_parser("retract-reference", help="Retract a Reference node (cascade deletes its edge) — journaled")
     retr.add_argument("reference_id", help="The Reference node id")
     _graph_plumbing(retr)
+    # ---- bind-source-urls: the public watch URL per member Source (ruling f0b7f125 (4)) ----
+    burl = sub.add_parser(
+        "bind-source-urls",
+        help="Bind each member Source's PUBLIC URL from a playlist metadata JSON "
+             "(youtube-playlist-extractor.py output: [{title, url, ...}]) by folded title — journaled "
+             "public_url property merges; unmatched members are printed, never guessed")
+    burl.add_argument("--collection-id", required=True, help="The Collection node id (full id)")
+    burl.add_argument("--playlist-metadata", required=True,
+                      help="playlist_metadata_<ts>.json: a list of {title, url, ...} rows")
+    burl.add_argument("--dry-run", action="store_true",
+                      help="Print the title join (matches + unmatched); touch neither graph nor journal")
+    _graph_plumbing(burl)
     # ---- retire-collection: a journaled FACT, never a cascade (ruling a7617bd4, item eaefebd2) ----
     rcol = sub.add_parser(
         "retire-collection",
@@ -421,6 +434,8 @@ def main(
         return asyncio.run(run_command(args))
     if args.command == "declare-structure":
         return asyncio.run(declare_structure_command(args))
+    if args.command == "bind-source-urls":
+        return asyncio.run(bind_source_urls_command(args))
     if args.command == "retire-collection":
         return asyncio.run(retire_collection_command(args))
     if args.command in ("add-reference", "retract-reference"):
@@ -645,6 +660,65 @@ async def reference_command(
     finally:
         await queue.stop()
         manager.unload_capability(args.graph_capability)
+    print(f"journal: {journal_path}")
+    return 0
+
+
+async def bind_source_urls_command(
+    args: argparse.Namespace,  # Parsed CLI arguments for the `bind-source-urls` subcommand
+) -> int:  # Process exit code
+    """Execute `bind-source-urls`: join a collection's member Sources to a playlist
+    metadata JSON (youtube-playlist-extractor.py output: [{title, url, ...}]) by folded
+    title and land each match as a journaled `public_url` property merge (ruling
+    f0b7f125 (4)) — the headless HITL seam for the watch URL nothing in the audio names;
+    unmatched members are printed, never guessed, and `--dry-run` prints the join and
+    lands nothing. Graph plumbing = the declare-structure shape (workspace resolved
+    first, the graph capability loaded alone, --graph-db-path a caller-wins config, the
+    sidecar journal DERIVED from the effective db path) — the FIFTH carried copy of the
+    2ce81638 open; it moves with the c3c21f99 home decision."""
+    ws = resolve_workspace(explicit=getattr(args, "workspace", None))
+    if ws is not None:
+        os.environ["CJM_WORKSPACE"] = str(ws.root)
+    doc = json.loads(Path(args.playlist_metadata).read_text())
+    items = doc if isinstance(doc, list) else list(doc.get("entries") or doc.get("videos") or [])
+    actor = args.actor or f"human:{getpass.getuser()}"
+    manager = CapabilityManager(search_paths=[Path(args.manifests_dir)])
+    configs = ({args.graph_capability: {"db_path": args.graph_db_path}}
+               if args.graph_db_path else None)
+    load_capabilities(manager, [args.graph_capability], configs=configs)
+    effective = args.graph_db_path or (
+        (manager.instances[args.graph_capability].config or {}).get("db_path"))
+    if not effective:
+        raise SystemExit("no graph db path: pass --graph-db-path, or persist one on the "
+                         f"{args.graph_capability} instance in the active workspace's config store")
+    journal_path = sidecar_journal_path(str(effective))
+    queue = JobQueue(deps=manager)
+    await queue.start()
+    try:
+        members = [{"id": sid, "title": title} for sid, title in
+                   await collection_members(queue, args.graph_capability, args.collection_id)]
+        if not members:
+            raise SystemExit(f"collection {args.collection_id} has no member Sources "
+                             "(the FULL Collection node id is required)")
+        bindings, unmatched = url_bindings_from_playlist(
+            members, items, playlist_file=str(args.playlist_metadata))
+        for u in unmatched:
+            print(f"unmatched  {u['source_id'][:8]}  {u['title']}")
+        if args.dry_run:
+            for b in bindings:
+                print(f"{b['source_id'][:8]}  {b['url']}  <- {b['playlist_title']}")
+            print(f"dry run: {len(bindings)} of {len(members)} members matched, "
+                  f"{len(unmatched)} unmatched; nothing landed")
+            return 0
+        if not bindings:
+            raise SystemExit("no member matched a playlist row — nothing to bind")
+        op = await bind_source_urls(queue, args.graph_capability, bindings, actor,
+                                    journal_path=journal_path, collection_id=args.collection_id)
+    finally:
+        await queue.stop()
+        manager.unload_capability(args.graph_capability)
+    print(f"bound public_url on {op['args']['sources']} of {len(members)} sources "
+          f"({len(unmatched)} unmatched; collection {args.collection_id}; actor {actor})")
     print(f"journal: {journal_path}")
     return 0
 

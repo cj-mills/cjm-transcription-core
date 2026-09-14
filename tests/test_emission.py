@@ -205,6 +205,90 @@ def test_declare_structure_journals_property_merges(tmp_path):
     assert q2.submitted == []
 
 
+def test_bind_source_urls_journals_property_merges(tmp_path):
+    """`bind_source_urls` lands one `public_url` (+ `public_url_evidence`) property merge
+    per binding through the collection-curation op shape — act `bind-source-urls`, no
+    deletes, no wires — journaled verbatim so a rebuild replays the same merges; a
+    binding without a url refuses before anything is applied."""
+    import asyncio
+    import json
+    from types import SimpleNamespace
+
+    from cjm_substrate.core.queue import JobStatus
+    from cjm_transcription_core.curation import bind_source_urls
+
+    class FakeQueue:
+        def __init__(self):
+            self.submitted = []
+
+        async def submit(self, graph_id, **kw):
+            self.submitted.append((graph_id, kw))
+            return "j1"
+
+        async def wait_for_job(self, jid):
+            return SimpleNamespace(status=JobStatus.completed, result=True, error=None)
+
+    q = FakeQueue()
+    journal = tmp_path / "context_graph.writes.jsonl"
+    bindings = [{"source_id": "src-1", "url": "https://www.youtube.com/watch?v=abc",
+                 "playlist_title": "Lecture 1: Profiling", "playlist_file": "pl.json"},
+                {"source_id": "src-2", "url": " https://www.youtube.com/watch?v=def "}]
+    op = asyncio.run(bind_source_urls(q, "g", bindings, "human:tester",
+                                      journal_path=str(journal), collection_id="coll-1"))
+    assert op["verb"] == "collection-curation"
+    assert op["args"] == {"act": "bind-source-urls", "collection_id": "coll-1", "sources": 2}
+    assert op["deletes"] == {"edge_ids": [], "node_ids": []}
+    assert op["wires"] == {"nodes": [], "edges": []}
+    assert op["updates"] == [
+        {"id": "src-1", "properties": {"public_url": "https://www.youtube.com/watch?v=abc",
+                                       "public_url_evidence": {"kind": "playlist-metadata",
+                                                               "playlist_file": "pl.json",
+                                                               "playlist_title": "Lecture 1: Profiling"}}},
+        {"id": "src-2", "properties": {"public_url": "https://www.youtube.com/watch?v=def",
+                                       "public_url_evidence": {"kind": "playlist-metadata"}}}]
+    assert [(g, kw["method"], kw["node_id"]) for g, kw in q.submitted] == [
+        ("g", "update_node", "src-1"), ("g", "update_node", "src-2")]
+    lines = [json.loads(l) for l in journal.read_text().splitlines() if l.strip()]
+    assert len(lines) == 1 and lines[0]["updates"] == op["updates"]
+    q2 = FakeQueue()
+    with pytest.raises(ValueError):
+        asyncio.run(bind_source_urls(q2, "g", [{"source_id": "src-9", "url": ""}], "human:tester"))
+    assert q2.submitted == []
+
+
+def test_url_bindings_from_playlist_joins_by_folded_title():
+    """`url_bindings_from_playlist` joins member Sources to playlist rows by title folded
+    through NFKC + the on-disk slash/colon substitutes + whitespace/case; the first row
+    per title wins, rows without a url never match, and unmatched members are reported
+    rather than guessed."""
+    from cjm_transcription_core.curation import url_bindings_from_playlist
+
+    members = [{"id": "s1", "title": "Lecture 16： On Hands Profiling"},      # fullwidth colon on disk
+               {"id": "s2", "title": "PTX⧸SASS level  review"},               # '⧸' for '/', double space
+               {"id": "s3", "title": "Bonus Lecture： CUDA C++ llm.cpp"},
+               {"id": "s4", "title": "Lecture 99： Nothing matches this"},
+               {"id": "s5", "title": "Lecture 107： PithTrain"},                  # playlist row lost its prefix
+               {"id": "s6", "title": "Lecture 5： Scan"}]                          # bare title shared by two rows
+    items = [{"title": "Lecture 16: On Hands Profiling", "url": "https://www.youtube.com/watch?v=a1"},
+             {"title": "ptx/sass LEVEL review", "url": "https://www.youtube.com/watch?v=a2"},
+             {"title": "Bonus Lecture: CUDA C++ llm.cpp", "url": ""},                          # no url: skipped
+             {"title": "Bonus Lecture: CUDA C++ llm.cpp", "url": "https://www.youtube.com/watch?v=a3"},
+             {"title": "Bonus Lecture: CUDA C++ llm.cpp", "url": "https://www.youtube.com/watch?v=dup"},
+             {"title": "PithTrain", "url": "https://www.youtube.com/watch?v=a5"},                # bare, unique
+             {"title": "Scan", "url": "https://www.youtube.com/watch?v=b1"},                     # bare 'scan' ×2
+             {"title": "Lecture 6: Scan", "url": "https://www.youtube.com/watch?v=b2"}]
+    bindings, unmatched = url_bindings_from_playlist(members, items, playlist_file="pl.json")
+    assert [(b["source_id"], b["url"]) for b in bindings] == [
+        ("s1", "https://www.youtube.com/watch?v=a1"),
+        ("s2", "https://www.youtube.com/watch?v=a2"),
+        ("s3", "https://www.youtube.com/watch?v=a3"),
+        ("s5", "https://www.youtube.com/watch?v=a5")]
+    assert bindings[0]["playlist_title"] == "Lecture 16: On Hands Profiling"
+    assert bindings[0]["playlist_file"] == "pl.json"
+    assert unmatched == [{"source_id": "s4", "title": "Lecture 99： Nothing matches this"},
+                         {"source_id": "s6", "title": "Lecture 5： Scan"}]
+
+
 def test_add_and_retract_reference_journal_wires_and_a_cascade_delete(tmp_path, monkeypatch):
     """`add_reference` lands ONE Reference node + ONE HAS_REFERENCE edge through the
     collection-curation op shape (act `add-reference`; no deletes, no updates), with a

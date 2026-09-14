@@ -62,6 +62,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 ### `cjm_transcription_core.cli`
 
 - `add_transcript_command` _function_ — Execute `add-transcript` (cf0b91d6 part 2; ruling 9ffce5f7 (1)): land an
+- `bind_source_urls_command` _function_ — Execute `bind-source-urls`: join a collection's member Sources to a playlist
 - `build_parser` _function_ — Build the CLI parser (subcommands: run).
 - `declare_structure_command` _function_ — Execute `declare-structure`: read a structure-map document and land it
 - `expand_sources` _function_ — Expand CLI source arguments into the ordered media-file list for a run.
@@ -81,6 +82,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 
 - `add_reference` _function_ — Attach a HUMAN-ADDED RESOURCE LINK to a Source as a `Reference` NODE (ruling
 - `apply_curation` _function_ — Replay one `collection-curation` op: deletes -> updates -> wires.
+- `bind_source_urls` _function_ — Bind each Source's PUBLIC URL — the time-addressable watch page a rendering links
 - `collection_members` _function_ — A collection's member Sources (PART_OF edges; unordered by design —
 - `collection_order` _function_ — Walk the materialized order, when one exists (typed EdgeQuery reads —
 - `confirm_collection` _function_ — Discharge a proposed collection's flag (ae3464fc: the explicit human
@@ -96,6 +98,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `retract_reference` _function_ — Retract a `Reference` node — the compensating act for `add_reference` (the node
 - `set_collection_order` _function_ — Materialize (or repair) a collection's order — the curation op ae3464fc
 - `structure_entries_from_map` _function_ — Normalize a structure-map document into `declare_structure` entries.
+- `url_bindings_from_playlist` _function_ — Pure: join a collection's member Sources to a playlist's rows BY TITLE and return
 
 ### `cjm_transcription_core.emission`
 

@@ -9,7 +9,9 @@ handler (DEC 426658f1 posture), so the sidecar journal stays the source of truth
 directly — the hub drives THIS vocabulary."""
 
 import logging
+import re
 import time
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_context_graph_layer.grammar import make_edge, spine_edges, SpineRelations
@@ -361,6 +363,89 @@ def structure_entries_from_map(
         entries.append({"source_id": sid, "structure": cells,
                         "evidence": list(row.get("evidence") or [])})
     return entries
+
+
+def url_bindings_from_playlist(
+    members: List[Dict[str, Any]],   # The collection's member Sources: [{"id", "title"}]
+    items: List[Dict[str, Any]],     # Playlist metadata rows: [{"title", "url", ...}] (youtube-playlist-extractor.py output)
+    *,
+    playlist_file: Optional[str] = None,  # Where the rows came from (rides each binding as evidence)
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:  # (bindings, unmatched members)
+    """Pure: join a collection's member Sources to a playlist's rows BY TITLE and return
+    one binding per matched Source plus the members no row matched (ruling f0b7f125 (4):
+    the playlist metadata JSON is the public-URL authority for a YouTube-sourced
+    collection). A downloaded video's file name — hence the Source title — carries the
+    characters YouTube's title cannot spell on disk (a fullwidth colon '：' for ':', '⧸'
+    for '/'), so both sides fold through NFKC + the slash swap + whitespace/case before
+    comparing. Second tier (live sighting: three GPU MODE streams re-titled on YouTube
+    after download): when no exact key matches, the 'Lecture N: ' prefix is stripped
+    from both sides and a UNIQUE bare-title match binds; a bare title two rows share
+    stays unmatched. A member that matches nothing is REPORTED, never guessed: the
+    human re-titles or binds it by hand."""
+    def _key(title: Any) -> str:
+        t = unicodedata.normalize("NFKC", str(title or ""))
+        t = t.replace("⧸", "/").replace("／", "/")
+        return " ".join(t.split()).strip().lower()
+
+    by_key: Dict[str, Dict[str, Any]] = {}
+    for it in items:
+        k = _key(it.get("title"))
+        if k and k not in by_key and it.get("url"):
+            by_key[k] = it
+    bindings: List[Dict[str, Any]] = []
+    unmatched: List[Dict[str, Any]] = []
+    def _bare(k: str) -> str:  # second tier: the 'Lecture N: ' prefix a re-titled video gained or lost
+        return re.sub(r"^lecture \d+[a-z]?:\s*", "", k)
+
+    by_bare: Dict[str, List[Dict[str, Any]]] = {}
+    for k, it in by_key.items():
+        by_bare.setdefault(_bare(k), []).append(it)
+    for m in members:
+        k = _key(m.get("title"))
+        hit = by_key.get(k)
+        if hit is None:
+            cands = by_bare.get(_bare(k)) or []
+            hit = cands[0] if len(cands) == 1 else None   # a bare title shared by two rows stays unmatched
+        if hit is None:
+            unmatched.append({"source_id": m["id"], "title": m.get("title")})
+            continue
+        bindings.append({"source_id": m["id"], "title": m.get("title"), "url": str(hit["url"]).strip(),
+                         "playlist_title": hit.get("title"),
+                         **({"playlist_file": playlist_file} if playlist_file else {})})
+    return bindings, unmatched
+
+
+async def bind_source_urls(
+    queue: Any,                            # Started job queue
+    graph_id: str,                         # Graph-storage capability id
+    bindings: List[Dict[str, Any]],        # [{"source_id", "url", "playlist_title"?, "playlist_file"?}] — one per Source
+    actor: str,                            # The binding human (attribution; the playlist file is human-generated data)
+    journal_path: Optional[str] = None,    # Sidecar journal
+    collection_id: Optional[str] = None,   # The Collection the bindings lie over (semantic summary only)
+) -> Dict[str, Any]:  # The journaled op
+    """Bind each Source's PUBLIC URL — the time-addressable watch page a rendering links
+    spans into (`read_source_unit` reads `public_url`; ruling e1fd4d64 (D): only an
+    addressable source renders timestamps, as links). Lands as a `public_url` property
+    merge per Source plus a `public_url_evidence` map saying where the URL came from
+    (the playlist metadata file + the row title that matched) — the declare-structure
+    shape: a PROPERTY merge riding `journal_curation` (verb `collection-curation`, act
+    `bind-source-urls`), idempotent under replay, a re-bind simply overwrites. A binding
+    without a URL refuses before anything is applied."""
+    updates: List[Dict[str, Any]] = []
+    for b in bindings:
+        sid = b["source_id"]
+        url = str(b.get("url") or "").strip()
+        if not url:
+            raise ValueError(f"bind_source_urls: binding {sid!r} carries no url")
+        evidence: Dict[str, Any] = {"kind": "playlist-metadata"}
+        for k in ("playlist_file", "playlist_title"):
+            if b.get(k):
+                evidence[k] = b[k]
+        updates.append({"id": sid, "properties": {"public_url": url, "public_url_evidence": evidence}})
+    return await journal_curation(
+        queue, graph_id, updates=updates, journal_path=journal_path, actor=actor,
+        args={"act": "bind-source-urls", "collection_id": collection_id,
+              "sources": len(updates)})
 
 
 async def declare_structure(
