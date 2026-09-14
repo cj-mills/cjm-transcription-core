@@ -44,7 +44,7 @@ from cjm_transcription_core.chunk import (apply_chunk_update, census_rows, chunk
                                           land_chunk_transcript, load_run_manifest,
                                           prior_config_hash, PRODUCER_EXTERNAL, PRODUCER_RERUN,
                                           prompt_hash_of, save_manifest, select_chunks,
-                                          summarize_census)
+                                          summarize_census, text_shape, wordwrap_warning)
 from cjm_transcription_core.curation import (add_reference, declare_structure, retract_reference,
                                              structure_entries_from_map)
 from cjm_transcription_core.models import CollectionDecl, new_run_id, PipelineConfig
@@ -904,6 +904,13 @@ async def add_transcript_command(
     text = text.strip()
     if not text:
         raise SystemExit("add-transcript: the text is empty")
+    # Landing-shape warning (finding efe88f17 (2)): the text lands VERBATIM, but a
+    # wordwrap-shaped paste ('Copy as text' from AI Studio) is called out so the
+    # operator learns the 'Copy as markdown' craft; the census rides the provenance.
+    shape = text_shape(text)
+    warning = wordwrap_warning(shape)
+    if warning:
+        print(warning)
     if args.prompt_file and args.prompt_hash:
         raise SystemExit("give --prompt-file OR --prompt-hash, not both")
     prompt_hash = args.prompt_hash or (prompt_hash_of(Path(args.prompt_file).read_text()) if args.prompt_file else "")
@@ -929,7 +936,8 @@ async def add_transcript_command(
         })
         landing = {"producer": PRODUCER_EXTERNAL, "reason": reason, "parent_run_id": parent.get("run_id"),
                    "actor": actor, "landed_at": time.time(), "model_id": args.model_id,
-                   "prompt_hash": prompt_hash, "text_source": args.text_source}
+                   "prompt_hash": prompt_hash, "text_source": args.text_source,
+                   "text_shape": shape}
         metadata = {"model": args.model_id, "source_start_time": float(seg.get("start", 0.0)),
                     "source_end_time": float(seg.get("end", 0.0)), "landing": landing}
         prior = prior_config_hash(parent, seg, tname)

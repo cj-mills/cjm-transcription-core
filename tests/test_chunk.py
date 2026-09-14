@@ -345,3 +345,23 @@ def test_retire_collection_parses():
     assert a.command == "retire-collection" and a.collection == "GPU MODE_OLD" and not a.unretire
     b = build_parser().parse_args(["runaway-census", "--include-retired"])
     assert b.include_retired
+
+
+def test_text_shape_flags_a_wordwrap_paste_and_passes_a_clean_one():
+    """Finding efe88f17 (2): a 'Copy as text' paste from AI Studio is fixed-width wrapped —
+    most non-final lines end mid-sentence; a 'Copy as markdown' paste (or a clean one)
+    has only paragraph breaks. The text is never changed; the landing warns."""
+    from cjm_transcription_core.chunk import text_shape, wordwrap_warning
+    wrapped = "\n".join(["And this leads to some surprising", "results again. So what we do is", "we take the kernel and",
+                         "launch it twice, which is fine", "for most cases but not for", "the ones where memory is",
+                         "the bottleneck. Right.", "", "Next speaker says a thing that", "also wraps here."])
+    shape = text_shape(wrapped)
+    assert shape["paragraphs"] == 2 and shape["lines"] == 9
+    assert shape["wrapped"] == 7 and shape["wordwrap"] is True
+    w = wordwrap_warning(shape)
+    assert w and w.startswith("WARNING: wordwrap shape") and "Copy as markdown" in w
+    clean = "First sentence. Second sentence here.\n\nA new paragraph the model wrote.\n\nAnother."
+    cs = text_shape(clean)
+    assert cs["wrapped"] == 0 and cs["wordwrap"] is False and wordwrap_warning(cs) is None
+    short = "one\ntwo\nthree"
+    assert text_shape(short)["wordwrap"] is False, "a few unpunctuated lines are not the shape"

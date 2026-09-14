@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,6 +17,10 @@ from cjm_transcript_graph_schema.schema import (audio_rendition_node_id, audio_s
                                                 transcript_node_id, TranscriptNode)
 
 logger = logging.getLogger(__name__)
+
+WORDWRAP_MIN_LINES = 6        # Fewer wrapped-looking lines than this is not a wordwrap shape
+WORDWRAP_MIN_RATIO = 0.5      # Share of non-final lines that end mid-sentence for the shape to hold
+_SENTENCE_END_CHARS = ".?!:;,\"'”’)]…"
 
 LANDING_VERB = "transcript-landing"  # The journaled op verb for BOTH producers (replays as wires)
 PRODUCER_RERUN = "rerun"             # A local transcriber re-run of one chunk (cache bypassed)
@@ -92,6 +97,46 @@ def prior_config_hash(
     if entry.get("config_hash"):
         return str(entry["config_hash"])
     return str(((manifest.get("capabilities") or {}).get(transcriber) or {}).get("config_hash") or "")
+
+
+def text_shape(
+    text: str,  # A pasted transcript, verbatim
+) -> Dict[str, Any]:  # {lines, paragraphs, wrapped, wordwrap: bool} — the landing's newline census
+    """Census the newline shape of a pasted external transcript (finding efe88f17;
+    pure). A `paragraph` is a blank-line break the model wrote on purpose; a
+    `wrapped` line is a non-final line of a paragraph that ends without sentence
+    punctuation — the fixed-width word-wrap the AI Studio 'Copy as text' gesture
+    bakes in ('Copy as markdown' carries none). `wordwrap` holds when at least
+    WORDWRAP_MIN_LINES such lines exist and they are at least WORDWRAP_MIN_RATIO
+    of the non-final lines. The text is never changed here — the landing stays
+    verbatim; decomp's fold normalises its reading of an external variant."""
+    paragraphs = [p for p in re.split(r"\n[ \t]*\n", text) if p.strip()]
+    lines = 0
+    non_final = 0
+    wrapped = 0
+    for p in paragraphs:
+        plines = [ln.rstrip() for ln in p.split("\n") if ln.strip()]
+        lines += len(plines)
+        for ln in plines[:-1]:
+            non_final += 1
+            if ln[-1] not in _SENTENCE_END_CHARS:
+                wrapped += 1
+    ratio = (wrapped / non_final) if non_final else 0.0
+    return {"lines": lines, "paragraphs": len(paragraphs), "wrapped": wrapped,
+            "wordwrap": wrapped >= WORDWRAP_MIN_LINES and ratio >= WORDWRAP_MIN_RATIO}
+
+
+def wordwrap_warning(
+    shape: Dict[str, Any],  # A `text_shape` census
+) -> Optional[str]:  # The operator-facing warning, or None when the shape is clean
+    """The landing-time warning for a wordwrap-shaped paste (efe88f17 (2)): the
+    text lands verbatim either way; the operator learns the craft."""
+    if not shape.get("wordwrap"):
+        return None
+    return (f"WARNING: wordwrap shape — {shape['wrapped']} of {shape['lines']} lines end mid-sentence "
+            f"(fixed-width wraps from a 'Copy as text' paste). The text lands verbatim and decomp "
+            f"folds it with wraps read as spaces; next time use 'Copy as markdown' in AI Studio, "
+            f"which carries no wrap newlines.")
 
 
 def build_chunk_landing(
