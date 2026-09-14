@@ -56,6 +56,8 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `save_manifest` _function_ — Write the derived manifest (the same recording contract as RunManifest.save).
 - `select_chunks` _function_ — Resolve a chunk selection against the manifest (pure).
 - `summarize_census` _function_ — Per-collection roll-up of the census (the closing evidence for 56a802b3 is a
+- `text_shape` _function_ — Census the newline shape of a pasted external transcript (finding efe88f17;
+- `wordwrap_warning` _function_ — The landing-time warning for a wordwrap-shaped paste (efe88f17 (2)): the
 
 ### `cjm_transcription_core.cli`
 
