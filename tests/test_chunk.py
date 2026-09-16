@@ -365,3 +365,26 @@ def test_text_shape_flags_a_wordwrap_paste_and_passes_a_clean_one():
     assert cs["wrapped"] == 0 and cs["wordwrap"] is False and wordwrap_warning(cs) is None
     short = "one\ntwo\nthree"
     assert text_shape(short)["wordwrap"] is False, "a few unpunctuated lines are not the shape"
+
+
+def test_render_escalation_prompt_prefers_a_neighbours_external_landing():
+    """Per-chunk authority in the prompt (user sighting 2026-09-16): a neighbour that
+    carries an external landing lends THAT text to the context slots (and a landed
+    chunk drafts from it), else the caller's `transcriber`, else manifest order — the
+    second escalated chunk must read the imported transcript of the first, never
+    whisper's tail of it."""
+    from cjm_transcription_core.chunk import render_escalation_prompt
+    m = _manifest()
+    names = list(m["config"]["transcriber_capabilities"])
+    m["config"]["transcriber_capabilities"] = names + ["gemini-3.8-flash/manual"]
+    segs = m["sources"][0]["segments"]
+    segs[0]["transcripts"]["gemini-3.8-flash/manual"] = {"text": "LANDED tail of chunk zero"}
+    out = render_escalation_prompt(m, 0, 1)
+    assert "BEFORE this chunk (another transcriber): LANDED tail of chunk zero" in out["prompt"]
+    # the landed chunk's own draft is the landing; the caller's transcriber governs the rest
+    own = render_escalation_prompt(m, 0, 0, transcriber="voxtral")
+    assert own["slots"]["draft_text"] == "LANDED tail of chunk zero"
+    segs[1]["transcripts"]["voxtral"]["text"] = "voxtral draft"
+    assert render_escalation_prompt(m, 0, 1, transcriber="voxtral")["slots"]["draft_text"] == "voxtral draft"
+    # no landing, no transcriber -> manifest order (unchanged behaviour)
+    assert render_escalation_prompt(m, 0, 1)["slots"]["draft_text"] == "ok"

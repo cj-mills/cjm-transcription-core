@@ -539,7 +539,7 @@ def render_escalation_prompt(
     seg_index: int,                # Segment `index` within that source
     *,
     template: Optional[str] = None,      # The prompt TEMPLATE (None = DEFAULT_ESCALATION_PROMPT); its hash is the variant's prompt hash
-    transcriber: Optional[str] = None,   # Whose text fills the neighbour / draft slots (None = the first transcriber with text)
+    transcriber: Optional[str] = None,   # Whose text fills the neighbour / draft slots when a chunk carries no external landing (None = the first transcriber with text)
     glossary: Optional[List[str]] = None,  # Known terms to carry (f9d0fd93 — the escalation output doubles as glossary evidence)
     neighbour_chars: int = 600,          # Tail / head of the neighbouring chunks' text to include
     draft_chars: int = 1200,             # Head of the chunk's own current text to include
@@ -548,7 +548,15 @@ def render_escalation_prompt(
     'nickel' is NCCL in 'Lecture 17: NCCL' — context is what audio cannot give). The
     prompt is DATA (f304d31d): the TEMPLATE's hash — not the rendered text's — rides
     the external landing's config hash, so one template = one variant identity across
-    chunks. The rendered prompt is what the copy-paste gesture puts on the clipboard."""
+    chunks. The rendered prompt is what the copy-paste gesture puts on the clipboard.
+
+    Slot text follows PER-CHUNK AUTHORITY (ruling cad12c97): a chunk that already
+    carries an external landing (`<model id>/manual`) lends THAT text to its
+    neighbours' context and to its own draft — the escalated transcript is the
+    chunk's text source, so the next chunk's prompt reads the better text (user
+    sighting 2026-09-16: the second chunk's prompt quoted whisper's tail of the
+    first, not the imported one). Otherwise `transcriber` (the caller's accuracy
+    model), else the first transcriber with text in manifest order."""
     tpl = template if template is not None else DEFAULT_ESCALATION_PROMPT
     srcs = list(manifest.get("sources") or [])
     if not 0 <= source_index < len(srcs):
@@ -564,9 +572,16 @@ def render_escalation_prompt(
         if s is None:
             return ""
         tr = s.get("transcripts") or {}
+        order = list((manifest.get("config") or {}).get("transcriber_capabilities") or list(tr))
+        # Per-chunk authority first: the LAST external landing with text on this chunk.
+        for t in reversed(order):
+            if is_external_transcriber(t):
+                txt = str((tr.get(t) or {}).get("text") or "")
+                if txt:
+                    return txt
         if transcriber and transcriber in tr:
             return str((tr[transcriber] or {}).get("text") or "")
-        for t in (manifest.get("config") or {}).get("transcriber_capabilities") or list(tr):
+        for t in order:
             txt = str((tr.get(t) or {}).get("text") or "")
             if txt:
                 return txt
