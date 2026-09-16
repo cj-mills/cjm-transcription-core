@@ -40,12 +40,12 @@ from cjm_substrate.core.queue import JobQueue
 from cjm_substrate.core.workspace import resolve_workspace
 from cjm_transcript_graph_schema.schema import external_config_hash, external_transcriber_name
 from cjm_transcription_core.chunk import (apply_chunk_update, census_rows, chunks_from_census,
-                                          DEFAULT_ESCALATION_MODEL_ID,
-                                          derive_manifest, fetch_transcript_rows,
-                                          land_chunk_transcript, load_run_manifest,
-                                          prior_config_hash, PRODUCER_EXTERNAL, PRODUCER_RERUN,
-                                          prompt_hash_of, save_manifest, select_chunks,
-                                          summarize_census, text_shape, wordwrap_warning)
+                                          DEFAULT_ESCALATION_MODEL_ID, derive_manifest,
+                                          fetch_transcript_rows, land_chunk_transcript,
+                                          load_run_manifest, prior_config_hash, PRODUCER_EXTERNAL,
+                                          PRODUCER_RERUN, prompt_hash_of, save_manifest,
+                                          select_chunks, summarize_census, text_shape,
+                                          wordwrap_warning)
 from cjm_transcription_core.curation import (add_reference, bind_source_urls, collection_members,
                                              declare_structure, retract_reference,
                                              structure_entries_from_map, url_bindings_from_playlist)
