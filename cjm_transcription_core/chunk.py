@@ -516,6 +516,8 @@ def flagged_chunks(
     return dict(sorted(out.items()))
 
 
+DEFAULT_ESCALATION_MODEL_ID = "gemini-3.8-flash"  # The external model id every escalation import prefills (user ruling ad0e3b4f, 2026-09-16): ONE constant, both shells + the CLI help read it
+
 DEFAULT_ESCALATION_PROMPT = """You are transcribing one chunk of a recording. Produce a verbatim, punctuated transcript of the attached audio — nothing else: no summary, no speaker labels, no timestamps, no commentary.
 
 Context (use it to resolve names, jargon and acronyms you hear):

@@ -40,6 +40,7 @@ from cjm_substrate.core.queue import JobQueue
 from cjm_substrate.core.workspace import resolve_workspace
 from cjm_transcript_graph_schema.schema import external_config_hash, external_transcriber_name
 from cjm_transcription_core.chunk import (apply_chunk_update, census_rows, chunks_from_census,
+                                          DEFAULT_ESCALATION_MODEL_ID,
                                           derive_manifest, fetch_transcript_rows,
                                           land_chunk_transcript, load_run_manifest,
                                           prior_config_hash, PRODUCER_EXTERNAL, PRODUCER_RERUN,
@@ -231,7 +232,8 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
         "add-transcript",
         help="Land an operator-pasted EXTERNAL transcript for ONE chunk as a third transcriber "
              "(<model id>/manual) with provenance — the same landing a re-run uses")
-    at.add_argument("--model-id", required=True, help="The external model that produced the text (e.g. gemini-2.5-pro)")
+    at.add_argument("--model-id", default=DEFAULT_ESCALATION_MODEL_ID,
+                    help=f"The external model that produced the text (default: {DEFAULT_ESCALATION_MODEL_ID})")
     at.add_argument("--text-file", required=True, help="File holding the pasted transcript text ('-' = stdin)")
     at.add_argument("--prompt-file", default=None,
                     help="The prompt template used (hashed into the variant's config hash; the prompt is data)")
