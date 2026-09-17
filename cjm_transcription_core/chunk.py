@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from cjm_context_graph_layer.journal import journal_extend
 from cjm_context_graph_layer.ops import graph_task
@@ -543,7 +543,8 @@ def render_escalation_prompt(
     glossary: Optional[List[str]] = None,  # Known terms to carry (f9d0fd93 — the escalation output doubles as glossary evidence)
     neighbour_chars: int = 600,          # Tail / head of the neighbouring chunks' text to include
     draft_chars: int = 1200,             # Head of the chunk's own current text to include
-) -> Dict[str, Any]:  # {"prompt", "prompt_hash", "template", "slots"}
+    slot_text: Optional[Callable[[float, float], Optional[str]]] = None,  # LIVE slot-text provider (chunk start, end) -> the effective text over that span, or None/"" = fall back to the manifest (finding c63cd2e3)
+) -> Dict[str, Any]:  # {"prompt", "prompt_hash", "template", "slots", "slot_sources"}
     """Render the escalation prompt WITH CONTEXT for one chunk (ruling 8a9b9639 (3):
     'nickel' is NCCL in 'Lecture 17: NCCL' — context is what audio cannot give). The
     prompt is DATA (f304d31d): the TEMPLATE's hash — not the rendered text's — rides
@@ -556,7 +557,16 @@ def render_escalation_prompt(
     chunk's text source, so the next chunk's prompt reads the better text (user
     sighting 2026-09-16: the second chunk's prompt quoted whisper's tail of the
     first, not the imported one). Otherwise `transcriber` (the caller's accuracy
-    model), else the first transcriber with text in manifest order."""
+    model), else the first transcriber with text in manifest order.
+
+    A LIVE provider outranks all of that (finding c63cd2e3, user ruling
+    2026-09-17): when the caller holds the corrected spine (the correction app's
+    E gesture), `slot_text(start, end)` fills the BEFORE / AFTER / DRAFT slots
+    with the effective text over each chunk's span — manual fidelity edits and
+    landed escalations included — and the manifest answers only where the
+    provider returns nothing. `slot_sources` names each slot's origin
+    ("spine" | "manifest"); the template hash is untouched either way (slot
+    text never rides the variant identity)."""
     tpl = template if template is not None else DEFAULT_ESCALATION_PROMPT
     srcs = list(manifest.get("sources") or [])
     if not 0 <= source_index < len(srcs):
@@ -587,9 +597,21 @@ def render_escalation_prompt(
                 return txt
         return ""
 
-    prev_text = text_of(segs[pos - 1] if pos > 0 else None)[-neighbour_chars:].strip()
-    next_text = text_of(segs[pos + 1] if pos + 1 < len(segs) else None)[:neighbour_chars].strip()
-    draft = text_of(seg)[:draft_chars].strip()
+    slot_sources: Dict[str, str] = {}
+
+    def slot_of(name: str, s: Optional[Dict[str, Any]]) -> str:
+        """Live spine text over the chunk's span first, the manifest's text second."""
+        if s is not None and slot_text is not None:
+            live = slot_text(float(s.get("start", 0.0)), float(s.get("end", 0.0)))
+            if live and str(live).strip():
+                slot_sources[name] = "spine"
+                return str(live)
+        slot_sources[name] = "manifest" if s is not None else "none"
+        return text_of(s)
+
+    prev_text = slot_of("prev_text", segs[pos - 1] if pos > 0 else None)[-neighbour_chars:].strip()
+    next_text = slot_of("next_text", segs[pos + 1] if pos + 1 < len(segs) else None)[:neighbour_chars].strip()
+    draft = slot_of("draft_text", seg)[:draft_chars].strip()
     slots = {
         "source_title": Path(str(src.get("source_path") or "")).stem or "(untitled)",
         "collection": ", ".join(str(c.get("title") or "") for c in (manifest.get("collections") or [])) or "(none)",
@@ -600,7 +622,8 @@ def render_escalation_prompt(
         "glossary": ", ".join(glossary) if glossary else "(none)",
     }
     prompt = tpl.format(**slots)
-    return {"prompt": prompt, "prompt_hash": prompt_hash_of(tpl), "template": tpl, "slots": slots}
+    return {"prompt": prompt, "prompt_hash": prompt_hash_of(tpl), "template": tpl, "slots": slots,
+            "slot_sources": slot_sources}
 
 
 def chunks_from_census(
