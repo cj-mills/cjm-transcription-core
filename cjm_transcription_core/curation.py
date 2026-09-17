@@ -120,6 +120,45 @@ async def collection_members(
     return [(r["id"], str(r.get("title") or "")) for r in (res.rows or [])]
 
 
+async def holding_collections(
+    queue: Any,      # Started queue over the loaded graph capability
+    graph_id: str,   # The graph capability name
+    source_id: str,  # Source node id
+) -> List[Dict[str, Any]]:  # [{"id", "title", "status"}] — every Collection the Source is PART_OF
+    """The Collections holding a Source — the inverse of `collection_members`,
+    read from the Source side (PART_OF edges INTO the candidate Collection).
+    One query, no corpus sweep: the correction app's direct `--source` open
+    resolves a source's grouping without the browse ladder (DEC 774dbe40)."""
+    cq = NodeQuery(label=TranscriptGraphLabels.COLLECTION,
+                   related=RelationPredicate(SpineRelations.PART_OF, direction="in",
+                                             node_id=source_id),
+                   project=["title", "status"])
+    res = await graph_task(queue, graph_id, "query_nodes", query=cq.to_dict())
+    return [{"id": r["id"], "title": str(r.get("title") or ""),
+             "status": str(r.get("status") or "proposed")}
+            for r in (res.rows or [])]
+
+
+async def sibling_sources(
+    queue: Any,      # Started queue over the loaded graph capability
+    graph_id: str,   # The graph capability name
+    source_id: str,  # Source node id
+) -> Dict[str, Any]:  # {"collections": [{"id","title","status"}] (live only), "siblings": {source_id: title}} — the source itself excluded
+    """A Source's collection siblings: the members of every LIVE collection
+    holding it (a retired collection is hidden with its members — ruling
+    a7617bd4 — so its speakers never crowd a picker), unioned across holding
+    collections, the source itself left out. The assign-lane picker's
+    collection tier reads exactly this set (DEC 774dbe40)."""
+    live = [c for c in await holding_collections(queue, graph_id, source_id)
+            if c["status"] != "retired"]
+    siblings: Dict[str, str] = {}
+    for c in live:
+        for sid, title in await collection_members(queue, graph_id, c["id"]):
+            if sid != source_id:
+                siblings.setdefault(sid, title)
+    return {"collections": live, "siblings": siblings}
+
+
 async def collection_order(
     queue: Any,      # Started queue over the loaded graph capability
     graph_id: str,   # The graph capability name
