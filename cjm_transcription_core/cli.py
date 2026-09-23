@@ -46,9 +46,11 @@ from cjm_transcription_core.chunk import (apply_chunk_update, census_rows, chunk
                                           PRODUCER_RERUN, prompt_hash_of, save_manifest,
                                           select_chunks, summarize_census, text_shape,
                                           wordwrap_warning)
-from cjm_transcription_core.curation import (add_reference, bind_source_urls, collection_members,
-                                             declare_structure, retract_reference,
-                                             structure_entries_from_map, url_bindings_from_playlist)
+from cjm_transcription_core.curation import (add_reference, bind_source_dates, bind_source_urls,
+                                             collection_member_props, collection_members,
+                                             date_bindings_from_video_metadata, declare_structure,
+                                             retract_reference, structure_entries_from_map,
+                                             url_bindings_from_playlist)
 from cjm_transcription_core.models import CollectionDecl, new_run_id, PipelineConfig
 from cjm_transcription_core.pipeline import (_journal_run_event, collect_capability_info,
                                              run_pipeline, submit_and_wait)
@@ -183,6 +185,34 @@ def build_parser() -> argparse.ArgumentParser:  # Configured CLI parser
     burl.add_argument("--dry-run", action="store_true",
                       help="Print the title join (matches + unmatched); touch neither graph nor journal")
     _graph_plumbing(burl)
+    # ---- probe-video-metadata + bind-source-dates: the lecture dates as content (ruling de9c4cda (H7)) ----
+    pvm = sub.add_parser(
+        "probe-video-metadata",
+        help="Ask yt-dlp for each playlist row's PER-VIDEO metadata (upload date, timestamp, release "
+             "timestamp, live status, duration, channel) in one process and write video_metadata_<ts>.json "
+             "beside the playlist file — data gathering for bind-source-dates, no graph write")
+    pvm.add_argument("--playlist-metadata", required=True,
+                     help="playlist_metadata_<ts>.json: a list of {title, url, ...} rows (the URLs are probed)")
+    pvm.add_argument("--out", default=None, help="Output path (default: video_metadata_<ts>.json beside the playlist file)")
+    pvm.add_argument("--yt-dlp", default=None, help="yt-dlp binary (default: PATH)")
+    pvm.add_argument("--limit", type=int, default=0, help="Probe only the first N rows (a smoke run)")
+    pvm.add_argument("-v", "--verbose", action="store_true", help="DEBUG-level logging")
+    bdat = sub.add_parser(
+        "bind-source-dates",
+        help="Bind each Source's DATES — published_at from a probe-video-metadata file joined by video id "
+             "(--collection-id + --video-metadata), or a human assertion of when a talk was recorded "
+             "(--source-id + --recorded [--precision day|around|month|year]) — journaled property merges")
+    bdat.add_argument("--collection-id", default=None, help="The Collection node id (full id) — with --video-metadata")
+    bdat.add_argument("--video-metadata", default=None, help="video_metadata_<ts>.json from probe-video-metadata")
+    bdat.add_argument("--source-id", default=None, help="One Source node id (full id) — with --recorded / --published")
+    bdat.add_argument("--recorded", default=None, help="When the talk happened, YYYY-MM-DD (human assertion)")
+    bdat.add_argument("--precision", default=None, choices=("day", "around", "month", "year"),
+                      help="How exactly --recorded is known (default day); a re-uploaded stream is usually 'around'")
+    bdat.add_argument("--published", default=None, help="The public upload day, YYYY-MM-DD (human assertion)")
+    bdat.add_argument("--note", default=None, help="Why / how the human knows (rides the evidence map)")
+    bdat.add_argument("--dry-run", action="store_true",
+                      help="Print the join or the assertion; touch neither graph nor journal")
+    _graph_plumbing(bdat)
     # ---- retire-collection: a journaled FACT, never a cascade (ruling a7617bd4, item eaefebd2) ----
     rcol = sub.add_parser(
         "retire-collection",
@@ -438,6 +468,10 @@ def main(
         return asyncio.run(declare_structure_command(args))
     if args.command == "bind-source-urls":
         return asyncio.run(bind_source_urls_command(args))
+    if args.command == "probe-video-metadata":
+        return probe_video_metadata_command(args)
+    if args.command == "bind-source-dates":
+        return asyncio.run(bind_source_dates_command(args))
     if args.command == "retire-collection":
         return asyncio.run(retire_collection_command(args))
     if args.command in ("add-reference", "retract-reference"):
@@ -721,6 +755,139 @@ async def bind_source_urls_command(
         manager.unload_capability(args.graph_capability)
     print(f"bound public_url on {op['args']['sources']} of {len(members)} sources "
           f"({len(unmatched)} unmatched; collection {args.collection_id}; actor {actor})")
+    print(f"journal: {journal_path}")
+    return 0
+
+
+def probe_video_metadata_command(
+    args: argparse.Namespace,  # Parsed CLI arguments for the `probe-video-metadata` subcommand
+) -> int:  # Process exit code
+    """Execute `probe-video-metadata`: ask yt-dlp for each playlist row's PER-VIDEO metadata
+    (upload date, timestamp, release timestamp, live status, duration, channel, title) in ONE
+    process and write the rows as `video_metadata_<ts>.json` beside the playlist file — data
+    gathering, not a graph write (`bind-source-dates` reads it). The flat playlist extraction
+    that produced playlist_metadata_<ts>.json carries no upload_date (every GPU MODE row was
+    empty, 2026-09-22); this per-video probe is the metadata refresh ruling de9c4cda (H7)
+    asks for. yt-dlp is resolved from --yt-dlp, else PATH; a row yt-dlp cannot read is
+    skipped (--ignore-errors) and reported by URL, never invented."""
+    import shutil
+    import subprocess
+    src = Path(args.playlist_metadata)
+    doc = json.loads(src.read_text())
+    rows = doc if isinstance(doc, list) else list(doc.get("entries") or doc.get("videos") or doc.get("rows") or [])
+    urls = [str(r.get("url") or r.get("webpage_url") or "").strip() for r in rows]
+    urls = [u for u in urls if u]
+    if args.limit:
+        urls = urls[:args.limit]
+    if not urls:
+        raise SystemExit(f"{src}: no rows carry a url")
+    exe = args.yt_dlp or shutil.which("yt-dlp")
+    if not exe or not Path(exe).exists():
+        raise SystemExit("yt-dlp not found: pass --yt-dlp PATH (e.g. the yt-dlp-env's binary) or put it on PATH")
+    fields = "id,title,upload_date,timestamp,release_timestamp,was_live,live_status,duration,channel,webpage_url"
+    cmd = [exe, "--skip-download", "--no-warnings", "--ignore-errors", "--print", f"%(.{{{fields}}})j", *urls]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    out_rows: List[Dict[str, Any]] = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                out_rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    got = {str(r.get("webpage_url") or "") for r in out_rows} | {str(r.get("id") or "") for r in out_rows}
+    missed = [u for u in urls if u not in got and not any(str(r.get("id") or "") and str(r.get("id")) in u for r in out_rows)]
+    version = subprocess.run([exe, "--version"], capture_output=True, text=True).stdout.strip()
+    out = Path(args.out) if args.out else src.with_name(f"video_metadata_{time.strftime('%Y-%m-%d_%H-%M-%S')}.json")
+    out.write_text(json.dumps({"probed_at": time.time(), "playlist_file": str(src), "yt_dlp": exe,
+                               "yt_dlp_version": version, "requested": len(urls), "rows": out_rows,
+                               "missed": missed}, indent=1, ensure_ascii=False) + "\n")
+    for u in missed:
+        print(f"missed  {u}")
+    if proc.returncode not in (0, 1) and not out_rows:
+        print(proc.stderr.strip()[-2000:])
+        raise SystemExit(f"yt-dlp exited {proc.returncode} with no rows")
+    print(f"probed {len(out_rows)} of {len(urls)} videos ({len(missed)} missed; yt-dlp {version})")
+    print(f"wrote {out}")
+    return 0
+
+
+async def bind_source_dates_command(
+    args: argparse.Namespace,  # Parsed CLI arguments for the `bind-source-dates` subcommand
+) -> int:  # Process exit code
+    """Execute `bind-source-dates` (ruling de9c4cda (H7)). Two shapes: (1) `--collection-id`
+    + `--video-metadata` joins the collection's member Sources to a `probe-video-metadata`
+    file BY VIDEO ID (each member's bound `public_url`) and lands `published_at` per match —
+    plus `recorded_at` at day precision where the video was itself the live stream;
+    unmatched members are printed, never guessed; `--dry-run` prints the join and lands
+    nothing. (2) `--source-id` + `--recorded YYYY-MM-DD` [`--precision` day|around|month|year]
+    [`--published YYYY-MM-DD`] [`--note`] is the HUMAN assertion for what no metadata knows
+    (a re-uploaded stream's recording day). Graph plumbing = the declare-structure shape
+    (bind_source_urls_command carries the note)."""
+    ws = resolve_workspace(explicit=getattr(args, "workspace", None))
+    if ws is not None:
+        os.environ["CJM_WORKSPACE"] = str(ws.root)
+    actor = args.actor or f"human:{getpass.getuser()}"
+    if bool(args.collection_id) == bool(args.source_id):
+        raise SystemExit("pass exactly one of --collection-id (with --video-metadata) or --source-id (with --recorded)")
+    if args.collection_id and not args.video_metadata:
+        raise SystemExit("--collection-id needs --video-metadata (a probe-video-metadata file)")
+    if args.source_id and not (args.recorded or args.published):
+        raise SystemExit("--source-id needs --recorded and/or --published (YYYY-MM-DD)")
+    manager = CapabilityManager(search_paths=[Path(args.manifests_dir)])
+    configs = ({args.graph_capability: {"db_path": args.graph_db_path}}
+               if args.graph_db_path else None)
+    load_capabilities(manager, [args.graph_capability], configs=configs)
+    effective = args.graph_db_path or (
+        (manager.instances[args.graph_capability].config or {}).get("db_path"))
+    if not effective:
+        raise SystemExit("no graph db path: pass --graph-db-path, or persist one on the "
+                         f"{args.graph_capability} instance in the active workspace's config store")
+    journal_path = sidecar_journal_path(str(effective))
+    queue = JobQueue(deps=manager)
+    await queue.start()
+    try:
+        if args.source_id:
+            note = {"kind": "human", "actor": actor, **({"note": args.note} if args.note else {})}
+            binding: Dict[str, Any] = {"source_id": args.source_id}
+            if args.recorded:
+                binding.update(recorded_at=args.recorded, recorded_at_precision=args.precision or "day",
+                               recorded_at_evidence=dict(note))
+            if args.published:
+                binding.update(published_at=args.published, published_at_evidence=dict(note))
+            if args.dry_run:
+                print(f"dry run: {json.dumps(binding, ensure_ascii=False)}; nothing landed")
+                return 0
+            op = await bind_source_dates(queue, args.graph_capability, [binding], actor,
+                                         journal_path=journal_path)
+            print(f"bound dates on {args.source_id[:8]}: {json.dumps(op['updates'][0]['properties'], ensure_ascii=False)}")
+        else:
+            doc = json.loads(Path(args.video_metadata).read_text())
+            items = doc if isinstance(doc, list) else list(doc.get("rows") or [])
+            members = await collection_member_props(queue, args.graph_capability, args.collection_id)
+            if not members:
+                raise SystemExit(f"collection {args.collection_id} has no member Sources "
+                                 "(the FULL Collection node id is required)")
+            bindings, unmatched = date_bindings_from_video_metadata(
+                members, items, metadata_file=str(args.video_metadata))
+            for u in unmatched:
+                print(f"unmatched  {u['source_id'][:8]}  {u['title']}  ({u['reason']})")
+            if args.dry_run:
+                for b in bindings:
+                    rec = f"  recorded {b['recorded_at']} ({b['recorded_at_precision']})" if b.get("recorded_at") else ""
+                    print(f"{b['source_id'][:8]}  published {b['published_at']}{rec}")
+                print(f"dry run: {len(bindings)} of {len(members)} members matched, "
+                      f"{len(unmatched)} unmatched; nothing landed")
+                return 0
+            if not bindings:
+                raise SystemExit("no member matched a metadata row — nothing to bind")
+            op = await bind_source_dates(queue, args.graph_capability, bindings, actor,
+                                         journal_path=journal_path, collection_id=args.collection_id)
+            print(f"bound dates on {op['args']['sources']} of {len(members)} sources "
+                  f"({len(unmatched)} unmatched; collection {args.collection_id}; actor {actor})")
+    finally:
+        await queue.stop()
+        manager.unload_capability(args.graph_capability)
     print(f"journal: {journal_path}")
     return 0
 

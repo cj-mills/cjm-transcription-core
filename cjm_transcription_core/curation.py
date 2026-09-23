@@ -12,6 +12,7 @@ import logging
 import re
 import time
 import unicodedata
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_context_graph_layer.grammar import make_edge, spine_edges, SpineRelations
@@ -137,6 +138,23 @@ async def holding_collections(
     return [{"id": r["id"], "title": str(r.get("title") or ""),
              "status": str(r.get("status") or "proposed")}
             for r in (res.rows or [])]
+
+
+async def collection_member_props(
+    queue: Any,      # Started queue over the loaded graph capability
+    graph_id: str,   # The graph capability name
+    coll_id: str,    # Collection node id
+    props: Tuple[str, ...] = ("title", "public_url"),  # The Source properties to project
+) -> List[Dict[str, Any]]:  # [{"id", <prop>...}] — membership, NOT order
+    """A collection's member Sources WITH the named properties (PART_OF edges; unordered
+    like `collection_members`, which projects the title alone). The date binding joins on
+    each member's bound `public_url` (ruling de9c4cda (H7)), so the members are read with
+    it in one query rather than a get_node per Source."""
+    mq = NodeQuery(label=TranscriptGraphLabels.SOURCE,
+                   related=RelationPredicate(SpineRelations.PART_OF, node_id=coll_id),
+                   project=list(props))
+    res = await graph_task(queue, graph_id, "query_nodes", query=mq.to_dict())
+    return [{"id": r["id"], **{p: r.get(p) for p in props}} for r in (res.rows or [])]
 
 
 async def sibling_sources(
@@ -454,6 +472,63 @@ def url_bindings_from_playlist(
     return bindings, unmatched
 
 
+def date_bindings_from_video_metadata(
+    members: List[Dict[str, Any]],   # The collection's member Sources with their bound URL: [{"id", "title", "public_url"}]
+    items: List[Dict[str, Any]],     # Per-video metadata rows (`probe-video-metadata` output): [{id, webpage_url, upload_date, timestamp, release_timestamp?, was_live, ...}]
+    *,
+    metadata_file: Optional[str] = None,  # Where the rows came from (rides each binding as evidence)
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:  # (bindings, unmatched members)
+    """Pure: join a collection's member Sources to per-video metadata rows BY VIDEO ID —
+    parsed from the Source's bound `public_url` and the row's `webpage_url` (else its `id`) —
+    never by title (ruling de9c4cda (H7): the lecture dates are content; the URL binding
+    already earned the join key). Each binding carries `published_at` = the video's upload
+    date (YYYYMMDD -> ISO), falling back to its `timestamp` (unix seconds, UTC). A video that
+    WAS a live stream carries `recorded_at` = the day of its `release_timestamp` at precision
+    `day` (the stream's start IS the recording); anything else carries no recorded date — a
+    re-uploaded stream's recording day is unknown to the metadata and stays a HUMAN
+    assertion. A member with no URL, or whose id matches no row, is reported, never guessed."""
+    def _vid(url: Any) -> str:
+        m = re.search(r"(?:[?&]v=|youtu\.be/|/live/|/shorts/|/embed/)([A-Za-z0-9_-]{11})", str(url or ""))
+        return m.group(1) if m else ""
+
+    def _iso(day: Any, ts: Any) -> str:
+        d = re.sub(r"\D", "", str(day or ""))
+        if len(d) == 8:
+            return f"{d[:4]}-{d[4:6]}-{d[6:]}"
+        try:
+            return datetime.fromtimestamp(float(ts), tz=timezone.utc).date().isoformat() if ts not in (None, "") else ""
+        except (TypeError, ValueError, OSError):
+            return ""
+
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for it in items or []:
+        vid = _vid(it.get("webpage_url")) or str(it.get("id") or "").strip()
+        if vid and vid not in by_id:
+            by_id[vid] = it
+    bindings: List[Dict[str, Any]] = []
+    unmatched: List[Dict[str, Any]] = []
+    for m in members:
+        vid = _vid(m.get("public_url"))
+        row = by_id.get(vid) if vid else None
+        pub = _iso(row.get("upload_date"), row.get("timestamp")) if row else ""
+        if not row or not pub:
+            unmatched.append({"source_id": m["id"], "title": str(m.get("title") or ""),
+                              "reason": "no public_url" if not vid else ("no metadata row" if not row else "row carries no date")})
+            continue
+        evidence: Dict[str, Any] = {"kind": "video-metadata", "video_id": vid}
+        if metadata_file:
+            evidence["metadata_file"] = metadata_file
+        b: Dict[str, Any] = {"source_id": m["id"], "published_at": pub, "published_at_evidence": evidence}
+        rel = row.get("release_timestamp")
+        if row.get("was_live") and rel not in (None, ""):
+            rec = _iso(None, rel)
+            if rec:
+                b.update(recorded_at=rec, recorded_at_precision="day",
+                         recorded_at_evidence={**evidence, "kind": "video-metadata:release"})
+        bindings.append(b)
+    return bindings, unmatched
+
+
 async def bind_source_urls(
     queue: Any,                            # Started job queue
     graph_id: str,                         # Graph-storage capability id
@@ -485,6 +560,53 @@ async def bind_source_urls(
         queue, graph_id, updates=updates, journal_path=journal_path, actor=actor,
         args={"act": "bind-source-urls", "collection_id": collection_id,
               "sources": len(updates)})
+
+
+async def bind_source_dates(
+    queue: Any,                            # Started job queue
+    graph_id: str,                         # Graph-storage capability id
+    bindings: List[Dict[str, Any]],        # [{"source_id", "published_at"?, "published_at_evidence"?, "recorded_at"?, "recorded_at_precision"?, "recorded_at_evidence"?}]
+    actor: str,                            # The binding human, or the human who ran the metadata refresh (attribution)
+    journal_path: Optional[str] = None,    # Sidecar journal
+    collection_id: Optional[str] = None,   # The Collection the bindings lie over (semantic summary only)
+) -> Dict[str, Any]:  # The journaled op
+    """Bind each Source's DATES — `published_at` (the public upload, an exact ISO day) and
+    `recorded_at` (when the talk happened) with `recorded_at_precision` in day | around |
+    month | year. Ruling de9c4cda (H7): the lecture dates are CONTENT a standalone page
+    shows (the state of the world its claims describe), and a re-uploaded live stream's
+    recording is known only to within days — hence the precision. Lands as a property merge
+    per Source, each date with an evidence map saying where it came from (video-metadata |
+    video-metadata:release | human) — the bind-source-urls shape riding `journal_curation`
+    (act `bind-source-dates`), idempotent under replay, a re-bind overwrites. A binding
+    with neither date, a date that is not YYYY-MM-DD, or an unknown precision refuses
+    before anything is applied."""
+    precisions = ("day", "around", "month", "year")
+    updates: List[Dict[str, Any]] = []
+    for b in bindings:
+        sid = b["source_id"]
+        pub = str(b.get("published_at") or "").strip()
+        rec = str(b.get("recorded_at") or "").strip()
+        if not pub and not rec:
+            raise ValueError(f"bind_source_dates: binding {sid!r} carries neither published_at nor recorded_at")
+        for name, val in (("published_at", pub), ("recorded_at", rec)):
+            if val and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", val):
+                raise ValueError(f"bind_source_dates: binding {sid!r} {name}={val!r} is not YYYY-MM-DD")
+        props: Dict[str, Any] = {}
+        if pub:
+            props["published_at"] = pub
+            props["published_at_evidence"] = dict(b.get("published_at_evidence") or {"kind": "human"})
+        if rec:
+            prec = str(b.get("recorded_at_precision") or "day").strip()
+            if prec not in precisions:
+                raise ValueError(f"bind_source_dates: binding {sid!r} recorded_at_precision={prec!r} "
+                                 f"is not one of {precisions}")
+            props["recorded_at"] = rec
+            props["recorded_at_precision"] = prec
+            props["recorded_at_evidence"] = dict(b.get("recorded_at_evidence") or {"kind": "human"})
+        updates.append({"id": sid, "properties": props})
+    return await journal_curation(
+        queue, graph_id, updates=updates, journal_path=journal_path, actor=actor,
+        args={"act": "bind-source-dates", "collection_id": collection_id, "sources": len(updates)})
 
 
 async def declare_structure(

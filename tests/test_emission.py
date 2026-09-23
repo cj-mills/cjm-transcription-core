@@ -289,6 +289,86 @@ def test_url_bindings_from_playlist_joins_by_folded_title():
                          {"source_id": "s6", "title": "Lecture 5： Scan"}]
 
 
+def test_date_bindings_from_video_metadata_joins_by_video_id():
+    """`date_bindings_from_video_metadata` (ruling de9c4cda (H7)) joins member Sources to
+    per-video metadata rows by the VIDEO ID parsed from both URLs — the watch URL, youtu.be
+    and /live/ forms alike — never by title; `published_at` comes from upload_date, else the
+    unix timestamp (UTC); only a video that WAS live carries `recorded_at` (its release day,
+    precision day); a member with no URL, no row, or a dateless row is reported with why."""
+    from cjm_transcription_core.curation import date_bindings_from_video_metadata
+
+    members = [{"id": "s1", "title": "Bonus Lecture： CUDA C++ llm.cpp", "public_url": "https://www.youtube.com/watch?v=WiB_3Csfj_Q"},
+               {"id": "s2", "title": "Lecture 5： Scan", "public_url": "https://youtu.be/abcdefghijk?t=3"},
+               {"id": "s3", "title": "Lecture 6： Live one", "public_url": "https://www.youtube.com/live/LIVE0000001"},
+               {"id": "s4", "title": "No url", "public_url": ""},
+               {"id": "s5", "title": "No row", "public_url": "https://www.youtube.com/watch?v=missing0000"},
+               {"id": "s6", "title": "Dateless", "public_url": "https://www.youtube.com/watch?v=dateless000"}]
+    items = [{"id": "WiB_3Csfj_Q", "webpage_url": "https://www.youtube.com/watch?v=WiB_3Csfj_Q", "title": "Bonus Lecture: CUDA C++ llm.cpp",
+              "upload_date": "20240427", "timestamp": 1714240214, "was_live": False, "live_status": "not_live"},
+             {"id": "abcdefghijk", "webpage_url": "https://www.youtube.com/watch?v=abcdefghijk", "upload_date": "", "timestamp": 1714240214},
+             {"id": "LIVE0000001", "webpage_url": "https://www.youtube.com/watch?v=LIVE0000001", "upload_date": "20240502",
+              "timestamp": 1714694400, "release_timestamp": 1714590000, "was_live": True, "live_status": "was_live"},
+             {"id": "dateless000", "webpage_url": "https://www.youtube.com/watch?v=dateless000", "upload_date": "", "timestamp": None}]
+    bindings, unmatched = date_bindings_from_video_metadata(members, items, metadata_file="vm.json")
+    assert [(b["source_id"], b["published_at"]) for b in bindings] == [("s1", "2024-04-27"), ("s2", "2024-04-27"), ("s3", "2024-05-02")]
+    assert bindings[0]["published_at_evidence"] == {"kind": "video-metadata", "video_id": "WiB_3Csfj_Q", "metadata_file": "vm.json"}
+    assert "recorded_at" not in bindings[0] and "recorded_at" not in bindings[1]          # not live: the recording day is a human's to assert
+    assert (bindings[2]["recorded_at"], bindings[2]["recorded_at_precision"]) == ("2024-05-01", "day")
+    assert bindings[2]["recorded_at_evidence"]["kind"] == "video-metadata:release"
+    assert [(u["source_id"], u["reason"]) for u in unmatched] == [("s4", "no public_url"), ("s5", "no metadata row"), ("s6", "row carries no date")]
+
+
+def test_bind_source_dates_journals_property_merges(tmp_path):
+    """`bind_source_dates` (ruling de9c4cda (H7)) lands `published_at` / `recorded_at` (+
+    precision, + an evidence map per date) as property merges through the collection-curation
+    op shape — act `bind-source-dates`, no deletes, no wires — journaled verbatim; a binding
+    with neither date, a non-ISO date, or an unknown precision refuses before anything is
+    applied; a human assertion without evidence is stamped `human`."""
+    import asyncio
+    import json
+    from types import SimpleNamespace
+
+    from cjm_substrate.core.queue import JobStatus
+    from cjm_transcription_core.curation import bind_source_dates
+
+    class FakeQueue:
+        def __init__(self):
+            self.submitted = []
+
+        async def submit(self, graph_id, **kw):
+            self.submitted.append((graph_id, kw))
+            return "j1"
+
+        async def wait_for_job(self, jid):
+            return SimpleNamespace(status=JobStatus.completed, result=True, error=None)
+
+    q = FakeQueue()
+    journal = tmp_path / "context_graph.writes.jsonl"
+    bindings = [{"source_id": "src-1", "published_at": "2024-04-27",
+                 "published_at_evidence": {"kind": "video-metadata", "video_id": "WiB_3Csfj_Q"}},
+                {"source_id": "src-2", "recorded_at": " 2024-04-25 ", "recorded_at_precision": "around"}]
+    op = asyncio.run(bind_source_dates(q, "g", bindings, "human:tester",
+                                       journal_path=str(journal), collection_id="coll-1"))
+    assert op["verb"] == "collection-curation"
+    assert op["args"] == {"act": "bind-source-dates", "collection_id": "coll-1", "sources": 2}
+    assert op["deletes"] == {"edge_ids": [], "node_ids": []} and op["wires"] == {"nodes": [], "edges": []}
+    assert op["updates"] == [
+        {"id": "src-1", "properties": {"published_at": "2024-04-27",
+                                       "published_at_evidence": {"kind": "video-metadata", "video_id": "WiB_3Csfj_Q"}}},
+        {"id": "src-2", "properties": {"recorded_at": "2024-04-25", "recorded_at_precision": "around",
+                                       "recorded_at_evidence": {"kind": "human"}}}]
+    assert [(g, kw["method"], kw["node_id"]) for g, kw in q.submitted] == [
+        ("g", "update_node", "src-1"), ("g", "update_node", "src-2")]
+    lines = [json.loads(l) for l in journal.read_text().splitlines() if l.strip()]
+    assert len(lines) == 1 and lines[0]["updates"] == op["updates"]
+    for bad in ([{"source_id": "s"}], [{"source_id": "s", "published_at": "20240427"}],
+                [{"source_id": "s", "recorded_at": "2024-04-27", "recorded_at_precision": "weekish"}]):
+        q2 = FakeQueue()
+        with pytest.raises(ValueError):
+            asyncio.run(bind_source_dates(q2, "g", bad, "human:tester"))
+        assert q2.submitted == []
+
+
 def test_add_and_retract_reference_journal_wires_and_a_cascade_delete(tmp_path, monkeypatch):
     """`add_reference` lands ONE Reference node + ONE HAS_REFERENCE edge through the
     collection-curation op shape (act `add-reference`; no deletes, no updates), with a

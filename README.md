@@ -62,6 +62,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 ### `cjm_transcription_core.cli`
 
 - `add_transcript_command` _function_ — Execute `add-transcript` (cf0b91d6 part 2; ruling 9ffce5f7 (1)): land an
+- `bind_source_dates_command` _function_ — Execute `bind-source-dates` (ruling de9c4cda (H7)). Two shapes: (1) `--collection-id`
 - `bind_source_urls_command` _function_ — Execute `bind-source-urls`: join a collection's member Sources to a playlist
 - `build_parser` _function_ — Build the CLI parser (subcommands: run).
 - `declare_structure_command` _function_ — Execute `declare-structure`: read a structure-map document and land it
@@ -72,6 +73,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `parse_config_overrides` _function_ — Parse repeatable KEY=VALUE config overrides (`--transcriber-config`).
 - `parse_max_concurrent` _function_ — Parse repeatable `--max-concurrent NAME=N` values into a per-capability cap map.
 - `parse_transcriber_spec` _function_ — Parse one `--transcriber` spec into a (capability, MODEL)-instance load directive.
+- `probe_video_metadata_command` _function_ — Execute `probe-video-metadata`: ask yt-dlp for each playlist row's PER-VIDEO metadata
 - `reference_command` _function_ — Execute `add-reference` / `retract-reference`: attach or retract a human-added
 - `rerun_chunk_command` _function_ — Execute `rerun-chunk` (cf0b91d6 part 1; ruling 8a9b9639 chunk-targeted, never wholesale).
 - `retire_collection_command` _function_ — Execute `retire-collection` (ruling a7617bd4, item eaefebd2): resolve the
@@ -82,13 +84,17 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 
 - `add_reference` _function_ — Attach a HUMAN-ADDED RESOURCE LINK to a Source as a `Reference` NODE (ruling
 - `apply_curation` _function_ — Replay one `collection-curation` op: deletes -> updates -> wires.
+- `bind_source_dates` _function_ — Bind each Source's DATES — `published_at` (the public upload, an exact ISO day) and
 - `bind_source_urls` _function_ — Bind each Source's PUBLIC URL — the time-addressable watch page a rendering links
+- `collection_member_props` _function_ — A collection's member Sources WITH the named properties (PART_OF edges; unordered
 - `collection_members` _function_ — A collection's member Sources (PART_OF edges; unordered by design —
 - `collection_order` _function_ — Walk the materialized order, when one exists (typed EdgeQuery reads —
 - `confirm_collection` _function_ — Discharge a proposed collection's flag (ae3464fc: the explicit human
 - `curation_replay_handlers` _function_ — The curation verb's replay registration (unioned into
+- `date_bindings_from_video_metadata` _function_ — Pure: join a collection's member Sources to per-video metadata rows BY VIDEO ID —
 - `declare_structure` _function_ — Declare a SOURCE STRUCTURE MAP: the WORK's own part/chapter structure
 - `file_sources` _function_ — File existing Sources into a collection (create-or-attach; the hub's
+- `holding_collections` _function_ — The Collections holding a Source — the inverse of `collection_members`,
 - `journal_curation` _function_ — Apply one curation act and journal it as a `collection-curation` op.
 - `list_collections` _function_ — Enumerate the graph's Collection nodes (the hub's grouping corpus).
 - `live_collections` _function_ — Filter retired collections out of a listing (pure; the pickers' default view).
@@ -97,6 +103,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `retire_collection` _function_ — Retire a Collection as a journaled FACT (ruling a7617bd4, item eaefebd2): status
 - `retract_reference` _function_ — Retract a `Reference` node — the compensating act for `add_reference` (the node
 - `set_collection_order` _function_ — Materialize (or repair) a collection's order — the curation op ae3464fc
+- `sibling_sources` _function_ — A Source's collection siblings: the members of every LIVE collection
 - `structure_entries_from_map` _function_ — Normalize a structure-map document into `declare_structure` entries.
 - `url_bindings_from_playlist` _function_ — Pure: join a collection's member Sources to a playlist's rows BY TITLE and return
 
@@ -164,4 +171,4 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 ## Dependencies
 
 **Depends on:** `cjm-capability-primitives`, `cjm-context-graph-layer`, `cjm-context-graph-primitives`, `cjm-substrate`, `cjm-transcript-graph-schema`, `cjm-transcription-adapter-interface`
-**Used by:** `cjm-transcript-correction-qt`, `cjm-transcription-qt`, `cjm-workflow-hub-qt`
+**Used by:** `cjm-transcript-correction-qt`, `cjm-transcript-decomp-core`, `cjm-transcription-qt`, `cjm-workflow-hub-qt`
