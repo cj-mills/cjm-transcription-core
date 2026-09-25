@@ -20,6 +20,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - **`cjm_transcription_core.results`** — Past-run results for the setup TUI: the core's own runs/*.json manifests read
 - **`cjm_transcription_core.sources`** — Source-selection state for the picker stage: a keyboard file browser plus the
 - **`cjm_transcription_core.state`** — Sidecar TUI state: last-used run settings persisted across sessions (the
+- **`claude-docs.mishomed_scan`** — 96edc646 population scan: flag FA words aligning outside every chunk of a spine.
 
 ## API
 
@@ -167,6 +168,10 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `load_state` _function_ — Read this project's persisted TUI state.
 - `save_state` _function_ — Merge updates into the persisted state and write it back (best-effort:
 - `state_path` _function_ — Where this project's TUI state lives.
+
+### `claude-docs.mishomed_scan`
+
+- `scan` _function_
 
 ## Dependencies
 
