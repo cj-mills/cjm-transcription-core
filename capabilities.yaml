@@ -1,0 +1,84 @@
+# PUBLIC capabilities yaml — PROJECTED from capabilities_test.yaml by `cjm-ctl derive-public-capabilities` (ruling 8299fb9d: one channel, PyPI specs with
+# floors, env_file = the capability repo's raw environment.yml). Regenerate after every
+# publish window; the dev yaml with checkout paths stays the --capabilities override.
+capabilities:
+- name: sys-mon-nvidia
+  env_name: test-sys-mon
+  env_file: https://raw.githubusercontent.com/cj-mills/cjm-capability-monitor-nvidia/main/environment.yml
+  package: cjm-capability-monitor-nvidia>=0.0.25
+  interface_libs:
+  - cjm-capability-primitives>=0.0.12
+- name: ffmpeg
+  env_name: test-ffmpeg
+  env_file: https://raw.githubusercontent.com/cj-mills/cjm-capability-ffmpeg/main/environment.yml
+  package: cjm-capability-ffmpeg>=0.0.27
+  interface_libs:
+  - cjm-capability-primitives>=0.0.12
+  adapters:
+  - lib: cjm-media-processing-adapter-interface>=0.0.7
+    impl: cjm_media_processing_adapter_interface.generic:GenericMediaProcessingAdapter
+- name: silero-vad
+  env_name: test-silero-vad
+  env_file: https://raw.githubusercontent.com/cj-mills/cjm-capability-silero-vad/main/environment.yml
+  package: cjm-capability-silero-vad>=0.0.28
+  interface_libs:
+  - cjm-capability-primitives>=0.0.12
+  adapters:
+  - lib: cjm-vad-adapter-interface>=0.0.10
+    impl: cjm_vad_adapter_interface.generic:GenericVADAdapter
+- name: demucs
+  env_name: test-demucs
+  env_file: https://raw.githubusercontent.com/cj-mills/cjm-capability-demucs/main/environment.yml
+  package: cjm-capability-demucs>=0.0.22
+  interface_libs:
+  - cjm-capability-primitives>=0.0.12
+  adapters:
+  - lib: cjm-source-separation-adapter-interface>=0.0.8
+    impl: cjm_source_separation_adapter_interface.generic:GenericSourceSeparationAdapter
+- name: whisper-local
+  env_name: test-whisper
+  env_file: https://raw.githubusercontent.com/cj-mills/cjm-capability-whisper/main/environment.yml
+  package: cjm-capability-whisper>=0.0.43
+  interface_libs:
+  - cjm-capability-primitives>=0.0.12
+  adapters:
+  - lib: cjm-transcription-adapter-interface>=0.0.16
+    impl: cjm_transcription_adapter_interface.generic:GenericTranscriptionAdapter
+- name: voxtral-hf
+  env_name: test-voxtral-hf
+  env_file: https://raw.githubusercontent.com/cj-mills/cjm-capability-voxtral-hf/main/environment.yml
+  package: cjm-capability-voxtral-hf>=0.0.49
+  interface_libs:
+  - cjm-capability-primitives>=0.0.12
+  adapters:
+  - lib: cjm-transcription-adapter-interface>=0.0.16
+    impl: cjm_transcription_adapter_interface.generic:GenericTranscriptionAdapter
+- name: qwen3-forced-aligner
+  env_name: test-qwen3-fa
+  env_file: https://raw.githubusercontent.com/cj-mills/cjm-capability-qwen3-forced-aligner/main/environment.yml
+  package: cjm-capability-qwen3-forced-aligner>=0.0.27
+  interface_libs:
+  - cjm-capability-primitives>=0.0.12
+  adapters:
+  - lib: cjm-forced-alignment-adapter-interface>=0.0.15
+    impl: cjm_forced_alignment_adapter_interface.generic:GenericForcedAlignmentAdapter
+- name: sqlite-graph
+  env_name: test-sqlite-graph
+  env_file: https://raw.githubusercontent.com/cj-mills/cjm-capability-graph-sqlite/main/environment.yml
+  package: cjm-capability-graph-sqlite>=0.0.28
+  interface_libs:
+  - cjm-context-graph-primitives>=0.0.15
+  adapters:
+  - lib: cjm-graph-storage-adapter-interface>=0.0.8
+    impl: cjm_graph_storage_adapter_interface.generic:GenericGraphStorageAdapter
+- name: pyannote
+  env_name: test-pyannote
+  env_file: https://raw.githubusercontent.com/cj-mills/cjm-capability-pyannote/main/environment.yml
+  package: cjm-capability-pyannote>=0.0.3
+  interface_libs:
+  - cjm-capability-primitives>=0.0.12
+  adapters:
+  - lib: cjm-speaker-diarization-adapter-interface>=0.0.1
+    impl: cjm_speaker_diarization_adapter_interface.generic:GenericSpeakerDiarizationAdapter
+  - impl: cjm_capability_pyannote.propose:PyannoteAudioEventDetectionAdapter
+  - impl: cjm_capability_pyannote.finetune:PyannoteSegmentationFinetuneAdapter
