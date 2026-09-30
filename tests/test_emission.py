@@ -192,12 +192,16 @@ def test_declare_structure_journals_property_merges(tmp_path):
     # Applied as update_node merges, one per entry, on the graph id given.
     assert [(g, kw["method"], kw["node_id"]) for g, kw in q.submitted] == [
         ("g", "update_node", "src-4"), ("g", "update_node", "src-5")]
-    assert q.submitted[0][1]["properties"] == op["updates"][0]["properties"]
     # Journaled verbatim (one line, the whole op).
     lines = [json.loads(l) for l in journal.read_text().splitlines() if l.strip()]
     assert len(lines) == 1
     assert lines[0]["verb"] == "collection-curation"
     assert lines[0]["updates"] == op["updates"]
+    # The op clock (design 8f6f2343): the live update stamps updated_at with the op's own
+    # journaled ts — the value its replay stamps — and the merged properties are the op's.
+    props = dict(q.submitted[0][1]["properties"])
+    assert props.pop("updated_at") == lines[0]["ts"]
+    assert props == op["updates"][0]["properties"]
     # An entry without cells refuses before anything is applied.
     q2 = FakeQueue()
     with pytest.raises(ValueError):

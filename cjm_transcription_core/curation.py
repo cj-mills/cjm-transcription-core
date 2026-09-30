@@ -19,7 +19,7 @@ from cjm_context_graph_layer.grammar import make_edge, spine_edges, SpineRelatio
 from cjm_context_graph_layer.identity import derive_edge_id, derive_node_id
 from cjm_context_graph_layer.journal import journal_extend
 from cjm_context_graph_layer.ops import extend_graph, graph_task
-from cjm_context_graph_primitives.journal import append_op
+from cjm_context_graph_primitives.journal import append_op, op_clocked
 from cjm_context_graph_primitives.query import EdgeQuery, NodeQuery, RelationPredicate
 from cjm_transcript_graph_schema.schema import CollectionNode, TranscriptGraphLabels
 
@@ -58,6 +58,7 @@ def curation_replay_handlers() -> Dict[str, Any]:  # verb -> async handler(queue
     return {"collection-curation": apply_curation}
 
 
+@op_clocked
 async def journal_curation(
     queue: Any,                    # Started job queue
     graph_id: str,                 # Graph-storage capability id
