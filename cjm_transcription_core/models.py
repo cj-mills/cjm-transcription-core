@@ -13,6 +13,7 @@ from cjm_substrate.core.workspace import relativize_recorded
 @dataclass
 class PipelineConfig:
     """Configuration for one transcription pipeline run."""
+
     vad_capability: str = "cjm-capability-silero-vad"               # VAD capability instance id
     ffmpeg_capability: str = "cjm-capability-ffmpeg"                # Convert/segment capability instance id
     transcriber_capabilities: List[str] = field(                       # Transcription capability instance ids (one or more; stage-5 dual-transcriber)
@@ -58,6 +59,7 @@ class SegmentRecord:
     variants; the authority designation is the decomp consumer's choice
     (stage-5 ratified design). `model_input_hash` content-addresses the
     model-input WAV (the audio of record, E14) for graph emission identity."""
+
     index: int              # 0-based position within the source
     start: float            # Segment start in source-audio seconds
     end: float              # Segment end in source-audio seconds
@@ -75,6 +77,7 @@ class SegmentRecord:
 @dataclass
 class SourceResult:
     """Pipeline result for one source audio file."""
+
     source_path: str        # Original input audio path
     duration: float         # Source duration in seconds
     vad_chunk_count: int    # Number of speech chunks VAD detected
@@ -115,6 +118,7 @@ class RunManifest:
     id (and the Transcript/Segment ids keyed on it) with no search. Builds on
     0.2.0's per-segment `transcripts` keyed by transcriber + source
     `content_hash` + per-segment `model_input_hash` + capability `config_hash`."""
+
     run_id: str                       # Unique run identifier
     created_at: float                 # Unix timestamp at run start
     config: Dict[str, Any]            # PipelineConfig snapshot
@@ -174,6 +178,7 @@ class CollectionDecl:
     sequence at capture. Members are the run-source paths the declaration
     covers; emission maps them to Source node ids from the completed results,
     so an aborted run files exactly the members that finished."""
+
     title: str                   # Collection display title (identity input via the schema's normalization)
     member_paths: List[str] = field(default_factory=list)  # Resolved member source paths (declaration order)
     status: str = "proposed"     # "proposed" (tool inference) | "confirmed" (human act)
