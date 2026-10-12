@@ -2,19 +2,15 @@
 
 Projected from the emission notebook's test cell at the golden-reference flip
 (pure; no capabilities involved)."""
+
 import dataclasses
 
 import pytest
-
+from cjm_transcript_graph_schema.schema import (audio_rendition_node_id, audio_segment_node_id,
+                                                collection_node_id, source_node_id,
+                                                transcript_node_id)
 from cjm_transcription_core.emission import build_collection_emission, build_source_emission
 from cjm_transcription_core.models import CollectionDecl, SegmentRecord, SourceResult
-from cjm_transcript_graph_schema.schema import (
-    audio_rendition_node_id,
-    audio_segment_node_id,
-    collection_node_id,
-    source_node_id,
-    transcript_node_id,
-)
 
 
 def _fixture_source():

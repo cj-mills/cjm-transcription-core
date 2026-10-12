@@ -2,6 +2,7 @@
 
 Projected from the boundaries notebook's behavioral-check cell at the golden-reference
 flip (mirrors the validated audio-segment semantics)."""
+
 from cjm_transcription_core.boundaries import compute_segment_boundaries
 
 

@@ -24,6 +24,7 @@ As-measured baseline (2026-06-11, RTX 4090, HH1 16.8min + HH2 35min):
 Run from the repo root in the cjm-transcription-core env:
     python tests_manual/measure_cold_parallel_overlap_e2e.py audio1.mp3 [audio2.mp3 ...]
 """
+
 import asyncio
 import logging
 import sys

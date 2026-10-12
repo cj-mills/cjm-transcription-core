@@ -1,11 +1,11 @@
 """Tests for cjm_transcription_core.cli — parser smoke checks (no capabilities involved).
 
 Projected from the cli notebook's parser-check cell at the golden-reference flip."""
-import pytest
 
+import pytest
 from cjm_transcription_core.cli import (build_parser, expand_sources,
-                                         expand_sources_with_collections,
-                                         parse_max_concurrent, parse_transcriber_spec)
+                                        expand_sources_with_collections, parse_max_concurrent,
+                                        parse_transcriber_spec)
 
 
 def test_run_defaults_and_opt_ins():

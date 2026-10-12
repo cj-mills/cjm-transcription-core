@@ -2,15 +2,11 @@
 
 Projected from the models notebook's shape-check demo cell at the golden-reference
 flip (no capabilities involved)."""
+
 import time
 
-from cjm_transcription_core.models import (
-    PipelineConfig,
-    RunManifest,
-    SegmentRecord,
-    SourceResult,
-    new_run_id,
-)
+from cjm_transcription_core.models import (new_run_id, PipelineConfig, RunManifest, SegmentRecord,
+                                           SourceResult)
 
 
 def test_manifest_shape_and_config_defaults():

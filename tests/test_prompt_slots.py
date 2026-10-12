@@ -2,7 +2,9 @@
 2026-09-17): a caller holding the corrected spine fills BEFORE / AFTER / DRAFT from
 it; the manifest answers only where the provider returns nothing; the template hash
 never moves."""
-from cjm_transcription_core.chunk import DEFAULT_ESCALATION_PROMPT, prompt_hash_of, render_escalation_prompt
+
+from cjm_transcription_core.chunk import (DEFAULT_ESCALATION_PROMPT, prompt_hash_of,
+                                          render_escalation_prompt)
 
 
 def _manifest():

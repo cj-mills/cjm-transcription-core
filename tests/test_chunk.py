@@ -1,18 +1,19 @@
 """Tests for cjm_transcription_core.chunk — chunk-grain landings, derived manifests, the census
 (pure; no capabilities involved). Work item cf0b91d6, rulings 9ffce5f7 · 8a9b9639 · 910f3692."""
+
 import asyncio
 import json
 
 import pytest
-
-from cjm_transcription_core import chunk
-from cjm_transcription_core.chunk import (apply_chunk_update, build_chunk_landing, census_rows,
-                                           chunks_from_census, derive_manifest, land_chunk_transcript,
-                                           load_run_manifest, prior_config_hash, prompt_hash_of,
-                                           save_manifest, select_chunks, summarize_census)
 from cjm_transcript_graph_schema.schema import (audio_rendition_node_id, audio_segment_node_id,
                                                 external_config_hash, external_transcriber_name,
                                                 source_node_id, transcript_node_id)
+from cjm_transcription_core import chunk
+from cjm_transcription_core.chunk import (apply_chunk_update, build_chunk_landing, census_rows,
+                                          chunks_from_census, derive_manifest,
+                                          land_chunk_transcript, load_run_manifest,
+                                          prior_config_hash, prompt_hash_of, save_manifest,
+                                          select_chunks, summarize_census)
 
 
 def _manifest():

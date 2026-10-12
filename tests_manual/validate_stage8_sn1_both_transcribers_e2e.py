@@ -33,6 +33,7 @@ editable/published stage-8 stack.
 Run (any env with sqlite3; spawns the cores' own envs):
   python tests_manual/validate_stage8_sn1_both_transcribers_e2e.py
 """
+
 import json
 import sqlite3
 import subprocess

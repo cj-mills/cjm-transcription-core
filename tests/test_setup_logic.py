@@ -6,11 +6,10 @@ import json
 import re
 from pathlib import Path
 
-from cjm_transcription_core.cli import build_parser as core_build_parser
-from cjm_transcription_core.cli import parse_transcriber_spec
 from cjm_transcription_core.candidates import (candidate_directives, discover_capability,
-                                              instance_id_for, model_axis, spec_string,
-                                              transcription_manifests)
+                                               instance_id_for, model_axis, spec_string,
+                                               transcription_manifests)
+from cjm_transcription_core.cli import build_parser as core_build_parser, parse_transcriber_spec
 from cjm_transcription_core.launch import build_parser, plan_argv
 from cjm_transcription_core.results import RunIndex
 from cjm_transcription_core.sources import CollectionField, SourceBrowser

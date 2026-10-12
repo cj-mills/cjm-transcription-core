@@ -2,23 +2,17 @@
 
 Projected from the pipeline notebook's three check cells at the golden-reference flip:
 pure-logic smoke checks, composition builder/folder checks, preprocessing composition."""
-import pytest
 
+import pytest
 from cjm_capability_primitives.media_processing import MediaArtifactResult, MediaSegment
 from cjm_capability_primitives.transcription import TranscriptionResult
 from cjm_capability_primitives.vad import TimeRange, VADResult
-from cjm_substrate.core.ports import NodeState, OutputRef, new_composition_run
-
+from cjm_substrate.core.ports import new_composition_run, NodeState, OutputRef
 from cjm_transcription_core.models import SegmentRecord
-from cjm_transcription_core.pipeline import (
-    build_segment_composition,
-    collect_capability_info,
-    confirm_seam,
-    normalize_vad_result,
-    records_from_composition,
-    tier1_segment_checks,
-    tier1_transcript_checks,
-)
+from cjm_transcription_core.pipeline import (build_segment_composition, collect_capability_info,
+                                             confirm_seam, normalize_vad_result,
+                                             records_from_composition, tier1_segment_checks,
+                                             tier1_transcript_checks)
 
 RAW_SEGMENTS = [
     MediaSegment(index=0, output_path="/seg0.flac", start=0.0, end=280.0, duration=280.0),

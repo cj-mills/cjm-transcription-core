@@ -43,6 +43,7 @@ As-measured (2026-06-14, stage-8 closeout, editable host + test-whisper worker):
 Run (any env with sqlite3; spawns the cores' own envs):
   python tests_manual/validate_stage8_sn1_e2e.py
 """
+
 import json
 import sqlite3
 import subprocess
