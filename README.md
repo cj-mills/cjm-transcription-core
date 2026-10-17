@@ -96,7 +96,7 @@ A frontend-agnostic core for the audio transcription workflow — composes isola
 - `declare_structure` _function_ — Declare a SOURCE STRUCTURE MAP: the WORK's own part/chapter structure
 - `file_sources` _function_ — File existing Sources into a collection (create-or-attach; the hub's
 - `holding_collections` _function_ — The Collections holding a Source — the inverse of `collection_members`,
-- `journal_curation` _function_ — Apply one curation act and journal it as a `collection-curation` op.
+- `journal_curation` _function_ — Journal one curation act as a `collection-curation` op, then apply it.
 - `list_collections` _function_ — Enumerate the graph's Collection nodes (the hub's grouping corpus).
 - `live_collections` _function_ — Filter retired collections out of a listing (pure; the pickers' default view).
 - `refile_members` _function_ — Move members between collections (the Supernova carve-out: select

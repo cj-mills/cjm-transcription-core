@@ -202,7 +202,8 @@ async def land_chunk_transcript(
     reason: str,                      # Why (runaway / operator / escalation ...)
     actor: str,                       # Who initiated (journal attribution)
     run_id: str,                      # The landing run's id (pins the derived manifest)
-    journal_path: Optional[str] = None,  # Sidecar write journal (None = unjournaled)
+    journal_path: Optional[str] = None,  # Sidecar write journal (None refuses unless `unjournaled`)
+    unjournaled: bool = False,        # Explicitly write with no journal (scratch graphs, tests)
     node_actor: Optional[str] = None, # Transcript attribution actor (None = capability:<transcriber>)
     method: str = "transcribe",       # Transcript attribution method
 ) -> Dict[str, Any]:  # {"transcript", "supersedes", "audio_segment", "rendition", "source", nodes/edges counts}
@@ -213,7 +214,7 @@ async def land_chunk_transcript(
         source_entry, seg, transcriber=transcriber, config_hash=config_hash, text=text,
         metadata=metadata, prior_config_hash=prior_config_hash, actor=node_actor, method=method)
     res = await journal_extend(queue, graph_id, nodes, edges, journal_path=journal_path,
-                               verb=LANDING_VERB, actor=actor, run=run_id,
+                               unjournaled=unjournaled, verb=LANDING_VERB, actor=actor, run=run_id,
                                args={"producer": producer, "reason": reason,
                                      "source_id": ids["source"], "audio_segment": ids["audio_segment"],
                                      "segment_index": int(seg.get("index", -1)),

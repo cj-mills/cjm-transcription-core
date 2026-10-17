@@ -152,23 +152,12 @@ def test_declare_structure_journals_property_merges(tmp_path):
     op verbatim to the sidecar journal so a rebuild replays the same merges."""
     import asyncio
     import json
-    from types import SimpleNamespace
-
-    from cjm_substrate.core.queue import JobStatus
+    from cjm_context_graph_layer.testing import MemGraph
     from cjm_transcription_core.curation import declare_structure
 
-    class FakeQueue:
-        def __init__(self):
-            self.submitted = []
-
-        async def submit(self, graph_id, **kw):
-            self.submitted.append((graph_id, kw))
-            return "j1"
-
-        async def wait_for_job(self, jid):
-            return SimpleNamespace(status=JobStatus.completed, result=True, error=None)
-
-    q = FakeQueue()
+    q = MemGraph()
+    for sid in ("src-4", "src-5"):
+        q.nodes[sid] = {"id": sid, "label": "Source", "properties": {}, "sources": []}
     journal = tmp_path / "context_graph.writes.jsonl"
     entries = [{"source_id": "src-4", "structure": {"kind": "chapter", "part": 1, "chapter": 1},
                 "evidence": ["strata:readout", "toc"]},
@@ -185,24 +174,24 @@ def test_declare_structure_journals_property_merges(tmp_path):
                                                           "evidence": ["strata:readout", "toc"]}}},
         {"id": "src-5", "properties": {"work_structure": {"kind": "chapter", "part": 1, "chapter": 2,
                                                           "evidence": ["toc"]}}}]
-    # Applied as update_node merges, one per entry, on the graph id given.
-    assert [(g, kw["method"], kw["node_id"]) for g, kw in q.submitted] == [
-        ("g", "update_node", "src-4"), ("g", "update_node", "src-5")]
-    # Journaled verbatim (one line, the whole op).
+    # Journaled verbatim (one line, the whole op), then applied as update_node merges, one per
+    # entry, through the replay's own handler (ruling 6683f49e (1); the cursor reads aside).
+    assert [m for m in q.methods if "journal_cursor" not in m] == ["update_node", "update_node"]
     lines = [json.loads(l) for l in journal.read_text().splitlines() if l.strip()]
     assert len(lines) == 1
     assert lines[0]["verb"] == "collection-curation"
     assert lines[0]["updates"] == op["updates"]
     # The op clock (design 8f6f2343): the live update stamps updated_at with the op's own
     # journaled ts — the value its replay stamps — and the merged properties are the op's.
-    props = dict(q.submitted[0][1]["properties"])
+    props = dict(q.nodes["src-4"]["properties"])
     assert props.pop("updated_at") == lines[0]["ts"]
     assert props == op["updates"][0]["properties"]
     # An entry without cells refuses before anything is applied.
-    q2 = FakeQueue()
+    q2 = MemGraph()
     with pytest.raises(ValueError):
-        asyncio.run(declare_structure(q2, "g", [{"source_id": "src-9", "structure": {}}], "human:tester"))
-    assert q2.submitted == []
+        asyncio.run(declare_structure(q2, "g", [{"source_id": "src-9", "structure": {}}], "human:tester",
+                                      journal_path=str(journal)))
+    assert q2.methods == []
 
 
 def test_bind_source_urls_journals_property_merges(tmp_path):
@@ -212,23 +201,10 @@ def test_bind_source_urls_journals_property_merges(tmp_path):
     binding without a url refuses before anything is applied."""
     import asyncio
     import json
-    from types import SimpleNamespace
-
-    from cjm_substrate.core.queue import JobStatus
+    from cjm_context_graph_layer.testing import MemGraph
     from cjm_transcription_core.curation import bind_source_urls
 
-    class FakeQueue:
-        def __init__(self):
-            self.submitted = []
-
-        async def submit(self, graph_id, **kw):
-            self.submitted.append((graph_id, kw))
-            return "j1"
-
-        async def wait_for_job(self, jid):
-            return SimpleNamespace(status=JobStatus.completed, result=True, error=None)
-
-    q = FakeQueue()
+    q = MemGraph()
     journal = tmp_path / "context_graph.writes.jsonl"
     bindings = [{"source_id": "src-1", "url": "https://www.youtube.com/watch?v=abc",
                  "playlist_title": "Lecture 1: Profiling", "playlist_file": "pl.json"},
@@ -246,14 +222,14 @@ def test_bind_source_urls_journals_property_merges(tmp_path):
                                                                "playlist_title": "Lecture 1: Profiling"}}},
         {"id": "src-2", "properties": {"public_url": "https://www.youtube.com/watch?v=def",
                                        "public_url_evidence": {"kind": "playlist-metadata"}}}]
-    assert [(g, kw["method"], kw["node_id"]) for g, kw in q.submitted] == [
-        ("g", "update_node", "src-1"), ("g", "update_node", "src-2")]
+    assert [m for m in q.methods if "journal_cursor" not in m] == ["update_node", "update_node"]
     lines = [json.loads(l) for l in journal.read_text().splitlines() if l.strip()]
     assert len(lines) == 1 and lines[0]["updates"] == op["updates"]
-    q2 = FakeQueue()
+    q2 = MemGraph()
     with pytest.raises(ValueError):
-        asyncio.run(bind_source_urls(q2, "g", [{"source_id": "src-9", "url": ""}], "human:tester"))
-    assert q2.submitted == []
+        asyncio.run(bind_source_urls(q2, "g", [{"source_id": "src-9", "url": ""}], "human:tester",
+                                     journal_path=str(journal)))
+    assert q2.methods == []
 
 
 def test_url_bindings_from_playlist_joins_by_folded_title():
@@ -326,23 +302,10 @@ def test_bind_source_dates_journals_property_merges(tmp_path):
     applied; a human assertion without evidence is stamped `human`."""
     import asyncio
     import json
-    from types import SimpleNamespace
-
-    from cjm_substrate.core.queue import JobStatus
+    from cjm_context_graph_layer.testing import MemGraph
     from cjm_transcription_core.curation import bind_source_dates
 
-    class FakeQueue:
-        def __init__(self):
-            self.submitted = []
-
-        async def submit(self, graph_id, **kw):
-            self.submitted.append((graph_id, kw))
-            return "j1"
-
-        async def wait_for_job(self, jid):
-            return SimpleNamespace(status=JobStatus.completed, result=True, error=None)
-
-    q = FakeQueue()
+    q = MemGraph()
     journal = tmp_path / "context_graph.writes.jsonl"
     bindings = [{"source_id": "src-1", "published_at": "2024-04-27",
                  "published_at_evidence": {"kind": "video-metadata", "video_id": "WiB_3Csfj_Q"}},
@@ -357,40 +320,36 @@ def test_bind_source_dates_journals_property_merges(tmp_path):
                                        "published_at_evidence": {"kind": "video-metadata", "video_id": "WiB_3Csfj_Q"}}},
         {"id": "src-2", "properties": {"recorded_at": "2024-04-25", "recorded_at_precision": "around",
                                        "recorded_at_evidence": {"kind": "human"}}}]
-    assert [(g, kw["method"], kw["node_id"]) for g, kw in q.submitted] == [
-        ("g", "update_node", "src-1"), ("g", "update_node", "src-2")]
+    assert [m for m in q.methods if "journal_cursor" not in m] == ["update_node", "update_node"]
     lines = [json.loads(l) for l in journal.read_text().splitlines() if l.strip()]
     assert len(lines) == 1 and lines[0]["updates"] == op["updates"]
     for bad in ([{"source_id": "s"}], [{"source_id": "s", "published_at": "20240427"}],
                 [{"source_id": "s", "recorded_at": "2024-04-27", "recorded_at_precision": "weekish"}]):
-        q2 = FakeQueue()
+        q2 = MemGraph()
         with pytest.raises(ValueError):
-            asyncio.run(bind_source_dates(q2, "g", bad, "human:tester"))
-        assert q2.submitted == []
+            asyncio.run(bind_source_dates(q2, "g", bad, "human:tester", journal_path=str(journal)))
+        assert q2.methods == []
 
 
-def test_add_and_retract_reference_journal_wires_and_a_cascade_delete(tmp_path, monkeypatch):
+def test_add_and_retract_reference_journal_wires_and_a_cascade_delete(tmp_path):
     """`add_reference` lands ONE Reference node + ONE HAS_REFERENCE edge through the
     collection-curation op shape (act `add-reference`; no deletes, no updates), with a
     (source, target)-derived node id so the same link re-added is the same node;
     `retract_reference` is the compensating act (a cascade node delete). Both append
-    verbatim to the sidecar journal. Refusals: no target, no label. The apply leg is
-    recorded, not run (extend-verify needs a real graph; the op SHAPE is the contract)."""
+    verbatim to the sidecar journal, then apply through the replay's own handler (ruling
+    6683f49e (1)). Refusals: no target, no label -- before anything is read or written."""
     import asyncio
     import json
 
-    from cjm_transcription_core import curation
+    from cjm_context_graph_layer.testing import MemGraph
     from cjm_transcription_core.curation import add_reference, retract_reference
     from cjm_transcript_graph_schema.schema import TranscriptGraphLabels
 
-    applied = []
-
-    async def record(queue, graph_id, op):
-        applied.append((graph_id, op))
-    monkeypatch.setattr(curation, "apply_curation", record)
+    q = MemGraph()
+    q.nodes["src-4"] = {"id": "src-4", "label": "Source", "properties": {}, "sources": []}
 
     journal = tmp_path / "context_graph.writes.jsonl"
-    op = asyncio.run(add_reference(None, "g", "src-4", label="Dumbing Us Down (publisher page)",
+    op = asyncio.run(add_reference(q, "g", "src-4", label="Dumbing Us Down (publisher page)",
                                    url="https://newsociety.com/book/dumbing-us-down-25th-anniversary-edition/",
                                    role="cited-work", actor="human:tester", journal_path=str(journal)))
     assert op["verb"] == "collection-curation" and op["args"]["act"] == "add-reference"
@@ -405,26 +364,54 @@ def test_add_and_retract_reference_journal_wires_and_a_cascade_delete(tmp_path, 
                                   "url": "https://newsociety.com/book/dumbing-us-down-25th-anniversary-edition/",
                                   "notes_slug": "", "role": "cited-work", "added_by": "human:tester"}
     assert (edge["source_id"], edge["target_id"], edge["relation_type"]) == ("src-4", ref_id, "HAS_REFERENCE")
-    assert applied and applied[0][0] == "g" and applied[0][1]["args"]["act"] == "add-reference"
+    assert ref_id in q.nodes and edge["id"] in q.edges  # applied after the append
     # Same (source, target) -> same id; a different target -> a different node.
-    op2 = asyncio.run(add_reference(None, "g", "src-4", label="renamed", url=node["properties"]["url"], actor="human:tester"))
+    op2 = asyncio.run(add_reference(q, "g", "src-4", label="renamed", url=node["properties"]["url"], actor="human:tester",
+                                    unjournaled=True))
     assert op2["reference_id"] == ref_id
-    op3 = asyncio.run(add_reference(None, "g", "src-4", label="Notes on Dumbing Us Down",
+    op3 = asyncio.run(add_reference(q, "g", "src-4", label="Notes on Dumbing Us Down",
                                     notes_slug="dumbing-us-down/ch01-notes", url="https://example.org/fallback",
-                                    role="related-notes", actor="human:tester"))
+                                    role="related-notes", actor="human:tester", unjournaled=True))
     assert op3["reference_id"] != ref_id
     assert op3["wires"]["nodes"][0]["properties"]["notes_slug"] == "dumbing-us-down/ch01-notes"
     # Retract: a cascade node delete, journaled.
-    rop = asyncio.run(retract_reference(None, "g", ref_id, actor="human:tester", journal_path=str(journal)))
+    rop = asyncio.run(retract_reference(q, "g", ref_id, actor="human:tester", journal_path=str(journal)))
     assert rop["args"] == {"act": "retract-reference", "reference_id": ref_id}
     assert rop["deletes"] == {"edge_ids": [], "node_ids": [ref_id]} and rop["wires"] == {"nodes": [], "edges": []}
+    assert ref_id not in q.nodes and edge["id"] not in q.edges  # the cascade delete applied
     lines = [json.loads(l) for l in journal.read_text().splitlines() if l.strip()]
     assert [l["args"]["act"] for l in lines] == ["add-reference", "retract-reference"]
     assert lines[0]["wires"]["nodes"][0]["id"] == ref_id
-    # Refusals before anything is applied.
-    n_applied = len(applied)
+    # Refusals before anything is read or written.
+    n_methods = len(q.methods)
     with pytest.raises(ValueError):
-        asyncio.run(add_reference(None, "g", "src-4", label="x", actor="human:tester"))
+        asyncio.run(add_reference(q, "g", "src-4", label="x", actor="human:tester", journal_path=str(journal)))
     with pytest.raises(ValueError):
-        asyncio.run(add_reference(None, "g", "src-4", label="  ", url="https://x", actor="human:tester"))
-    assert len(applied) == n_applied
+        asyncio.run(add_reference(q, "g", "src-4", label="  ", url="https://x", actor="human:tester",
+                                  journal_path=str(journal)))
+    assert len(q.methods) == n_methods
+
+
+def test_an_emission_and_its_derivation_are_one_unit_of_work(tmp_path):
+    """Ruling 6683f49e (1): the source emission and the Derivation it plans from what the
+    emission ADDED land in one write window -- one cursor read, one heal -- each op journaled,
+    then applied; a re-emission over the same content is no change and journals nothing
+    (17daa86b); with no journal path the emission refuses before reading anything."""
+    import asyncio
+
+    from cjm_context_graph_layer.journal import UnjournaledWrite
+    from cjm_context_graph_layer.testing import MemGraph
+    from cjm_context_graph_primitives.journal import read_journal
+    from cjm_transcription_core.emission import emit_source_graph
+
+    src, hashes = _fixture_source()
+    g, j = MemGraph(), str(tmp_path / "context_graph.writes.jsonl")
+    rec = asyncio.run(emit_source_graph(g, "g", src, hashes, "run-1", journal_path=j))
+    assert [op["verb"] for op in read_journal(j)] == ["source-emission", "derivation"]
+    assert g.methods.count("journal_cursors") == 1 and rec["nodes_added"] == 9
+    again = asyncio.run(emit_source_graph(g, "g", src, hashes, "run-2", journal_path=j))
+    assert again["nodes_added"] == 0 and len(read_journal(j)) == 2
+    fresh = MemGraph()
+    with pytest.raises(UnjournaledWrite, match="source-emission"):
+        asyncio.run(emit_source_graph(fresh, "g", src, hashes, "run-3"))
+    assert fresh.methods == []

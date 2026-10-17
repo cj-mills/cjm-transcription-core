@@ -563,9 +563,17 @@ async def run_pipeline(
         }
     # Pipeline writes append through to the graph db's SIDECAR journal (DEC ccbab9f5 /
     # finding 4219da27): unjournaled ingestion would erode db-rebuildability.
-    graph_journal_path = (sidecar_journal_path(manifest.graph["db_path"])
-                          if cfg.graph_capability and (manifest.graph or {}).get("db_path")
-                          else None)
+    # A graph with no recorded db_path has no sidecar journal, and nothing writes a journal-sourced
+    # graph unjournaled (ruling 6683f49e, design detail 65f4a6c9 (3)): refused before any work.
+    graph_journal_path: Optional[str] = None
+    if cfg.graph_capability:
+        db_path = (manifest.graph or {}).get("db_path")
+        if not db_path:
+            raise ValueError(f"run {run_id}: the graph capability {cfg.graph_capability!r} records no "
+                             f"db_path, so its writes have no sidecar journal -- configure the "
+                             f"capability's db_path (a journal-sourced graph is never written "
+                             f"unjournaled)")
+        graph_journal_path = sidecar_journal_path(db_path)
     transcriber_config_hashes = {
         t: str((manifest.capabilities.get(t) or {}).get("config_hash") or "")
         for t in cfg.transcriber_capabilities

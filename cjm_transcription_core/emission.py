@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_context_graph_layer.declare import Derivation, derivation_to_graph
 from cjm_context_graph_layer.grammar import spine_edges
-from cjm_context_graph_layer.journal import journal_extend, wires_handlers
+from cjm_context_graph_layer.journal import journal_extend, wires_handlers, write_window
 from cjm_substrate.core.queue import JobQueue
 from cjm_transcript_graph_schema.schema import (AudioRenditionNode, AudioSegmentNode,
                                                 collection_edges, CollectionNode, SourceNode,
@@ -91,7 +91,8 @@ async def emit_source_graph(
     transcriber_config_hashes: Dict[str, str],  # transcriber -> effective config hash
     run_id: str,                                # Run id (recorded on the boundary Derivation event)
     chain: Optional[List[str]] = None,          # Preprocessing chain that produced the model-inputs ([]/None = raw)
-    journal_path: Optional[str] = None,         # Sidecar write journal — DELTA ops append on success (None = unjournaled)
+    journal_path: Optional[str] = None,         # Sidecar write journal — the DELTA ops journaled, then applied (None refuses unless `unjournaled`)
+    unjournaled: bool = False,                  # Explicitly write with no journal (scratch graphs, tests)
 ) -> Dict[str, Any]:  # Emission record for the manifest
     """Idempotently emit one source's graph root through the task channel.
 
@@ -108,29 +109,35 @@ async def emit_source_graph(
     """
     chain = list(chain or [])
     nodes, edges, ids = build_source_emission(src, transcriber_config_hashes, chain=chain)
-    res = await journal_extend(queue, graph_id, nodes, edges,
-                               journal_path=journal_path, verb="source-emission",
-                               actor="pipeline:cjm-transcription-core", run=run_id,
-                               args={"source_id": ids["source"], "chain": chain})
-    added = set(res.added_node_ids)
-    new_asegs = [a for a in ids["audio_segments"] if a in added]
-    new_renditions = [r for r in ids["renditions"] if r in added]
-    if new_asegs or new_renditions:
-        parts = (["segment-boundaries"] if new_asegs else []) + (["preprocessing"] if (chain and new_renditions) else [])
-        method = ("+".join(parts) or "renditions") + "/v1"
-        props: Dict[str, Any] = {"run_id": run_id}
-        if chain:
-            props["chain"] = list(chain)
-        d = Derivation(
-            actor="host:cjm-transcription-core", method=method,
-            input_ids=[ids["source"]], output_ids=new_asegs + new_renditions,
-            properties=props,
-        )
-        dn, de = derivation_to_graph(d)
-        await journal_extend(queue, graph_id, [dn], de,
-                             journal_path=journal_path, verb="derivation",
-                             actor="pipeline:cjm-transcription-core", run=run_id,
-                             args={"method": method})
+    # The emission and the Derivation it plans from what the emission added: one unit of work
+    # (ruling 6683f49e (1)) -- the second op is planned on the db the first left.
+    async with write_window(queue, graph_id, journal_path, unjournaled=unjournaled,
+                            what="source-emission"):
+        res = await journal_extend(queue, graph_id, nodes, edges,
+                                   journal_path=journal_path, unjournaled=unjournaled,
+                                   verb="source-emission",
+                                   actor="pipeline:cjm-transcription-core", run=run_id,
+                                   args={"source_id": ids["source"], "chain": chain})
+        added = set(res.added_node_ids)
+        new_asegs = [a for a in ids["audio_segments"] if a in added]
+        new_renditions = [r for r in ids["renditions"] if r in added]
+        if new_asegs or new_renditions:
+            parts = (["segment-boundaries"] if new_asegs else []) + (["preprocessing"] if (chain and new_renditions) else [])
+            method = ("+".join(parts) or "renditions") + "/v1"
+            props: Dict[str, Any] = {"run_id": run_id}
+            if chain:
+                props["chain"] = list(chain)
+            d = Derivation(
+                actor="host:cjm-transcription-core", method=method,
+                input_ids=[ids["source"]], output_ids=new_asegs + new_renditions,
+                properties=props,
+            )
+            dn, de = derivation_to_graph(d)
+            await journal_extend(queue, graph_id, [dn], de,
+                                 journal_path=journal_path, unjournaled=unjournaled,
+                                 verb="derivation",
+                                 actor="pipeline:cjm-transcription-core", run=run_id,
+                                 args={"method": method})
     record = {
         "source_node_id": ids["source"],
         "nodes_added": res.nodes_added,
@@ -191,7 +198,8 @@ async def emit_collections_graph(
     decls: List[CollectionDecl],        # The run's collection declarations
     path_to_source_id: Dict[str, str],  # Completed source path -> Source node id
     run_id: str,                        # Run id (journal attribution)
-    journal_path: Optional[str] = None,  # Sidecar write journal (None = unjournaled)
+    journal_path: Optional[str] = None,  # Sidecar write journal (None refuses unless `unjournaled`)
+    unjournaled: bool = False,           # Explicitly write with no journal (scratch graphs, tests)
 ) -> List[Dict[str, Any]]:  # Emission records for the manifest
     """Idempotently emit the run's collection declarations (verb
     `collection-declaration`, wire-carrying like every emission op).
@@ -208,8 +216,8 @@ async def emit_collections_graph(
             logger.info(f"collection '{decl.title}': no completed members this run; skipped")
             continue
         res = await journal_extend(queue, graph_id, nodes, edges,
-                                   journal_path=journal_path, verb="collection-declaration",
-                                   actor=decl.actor, run=run_id,
+                                   journal_path=journal_path, unjournaled=unjournaled,
+                                   verb="collection-declaration", actor=decl.actor, run=run_id,
                                    args={"collection_id": ids["collection"],
                                          "title": decl.title, "status": decl.status,
                                          "ordered": decl.ordered})

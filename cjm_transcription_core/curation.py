@@ -17,9 +17,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_context_graph_layer.grammar import make_edge, spine_edges, SpineRelations
 from cjm_context_graph_layer.identity import derive_edge_id, derive_node_id
-from cjm_context_graph_layer.journal import journal_extend
+from cjm_context_graph_layer.journal import journal_extend, journal_op, write_window
 from cjm_context_graph_layer.ops import extend_graph, graph_task
-from cjm_context_graph_primitives.journal import append_op, op_clocked
+from cjm_context_graph_primitives.journal import op_clocked
 from cjm_context_graph_primitives.query import EdgeQuery, NodeQuery, RelationPredicate
 from cjm_transcript_graph_schema.schema import CollectionNode, TranscriptGraphLabels
 
@@ -68,18 +68,20 @@ async def journal_curation(
     delete_node_ids: Optional[List[str]] = None,      # Node ids to delete (cascade)
     nodes: Optional[List[Dict[str, Any]]] = None,     # Node wires to extend with
     edges: Optional[List[Dict[str, Any]]] = None,     # Edge wires to extend with
-    journal_path: Optional[str] = None,  # Sidecar journal (None = unjournaled)
+    journal_path: Optional[str] = None,  # Sidecar journal (None refuses unless `unjournaled`)
     actor: str = "",               # Who curated (attribution)
     run: Optional[str] = None,     # Run id when a run drives it (usually None: curation is a human act)
     args: Optional[Dict[str, Any]] = None,  # Small semantic summary for the op
+    unjournaled: bool = False,     # Explicitly curate with no journal (scratch graphs, tests)
 ) -> Dict[str, Any]:  # The op as journaled (deletes/updates/wires)
-    """Apply one curation act and journal it as a `collection-curation` op.
+    """Journal one curation act as a `collection-curation` op, then apply it.
 
-    The write-side dual of `apply_curation` — apply order matches replay order
-    (deletes -> updates -> wires), and the op records the INTENT verbatim: unlike
-    `journal_extend`'s added-delta trim, deletes and updates journal whole (they
-    are already idempotent under replay, and trimming them would forget the act
-    when the live db happened to be ahead)."""
+    THE WRITE ORDER (ruling 6683f49e (1)): the op is APPENDED, then APPLIED through
+    `apply_curation` -- the replay's own handler, deletes -> updates -> wires -- under the
+    family's writer, which the verb's `write_window` is joined by. The op records the INTENT
+    verbatim: unlike `journal_extend`'s plan by presence, deletes and updates journal whole
+    (they are already idempotent under replay, and trimming them would forget the act when
+    the live db happened to be ahead)."""
     op: Dict[str, Any] = {"verb": "collection-curation", "actor": actor,
                           "args": dict(args or {}),
                           "deletes": {"edge_ids": list(delete_edge_ids or []),
@@ -89,11 +91,9 @@ async def journal_curation(
                                     "edges": list(edges or [])}}
     if run:
         op["run"] = run
-    await apply_curation(queue, graph_id, op)
-    if journal_path:
-        append_op(journal_path, op, dedup=False)
+    landed = await journal_op(queue, graph_id, op, journal_path, unjournaled=unjournaled)
     logger.info(f"collection-curation applied: {op['args']}")
-    return op
+    return landed
 
 
 async def list_collections(
@@ -225,7 +225,8 @@ async def file_sources(
     title: str,             # Collection title (identity input; existing title = attach)
     member_ids: List[str],  # Source node ids to file (already on the graph)
     actor: str,             # Who filed (attribution)
-    journal_path: Optional[str] = None,  # Sidecar journal
+    journal_path: Optional[str] = None,  # Sidecar journal (None refuses unless `unjournaled`)
+    unjournaled: bool = False,           # Explicitly curate with no journal (scratch graphs, tests)
     status: str = "confirmed",  # A human filing in the hub IS a confirmation act
 ) -> Dict[str, Any]:  # {"collection_node_id", "nodes_added", "edges_added"}
     """File existing Sources into a collection (create-or-attach; the hub's
@@ -238,8 +239,8 @@ async def file_sources(
     coll = CollectionNode(title=title, status=status, actor=actor)
     edges = [make_edge(m, coll.id, SpineRelations.PART_OF) for m in member_ids]
     res = await journal_extend(queue, graph_id, [coll.to_graph_node()], edges,
-                               journal_path=journal_path, verb="collection-declaration",
-                               actor=actor,
+                               journal_path=journal_path, unjournaled=unjournaled,
+                               verb="collection-declaration", actor=actor,
                                args={"collection_id": coll.id, "title": title,
                                      "status": status, "ordered": False,
                                      "curated": True})
@@ -252,7 +253,8 @@ async def confirm_collection(
     graph_id: str,       # Graph-storage capability id
     coll_id: str,        # Collection node id to confirm
     actor: str,          # The confirming human (attribution)
-    journal_path: Optional[str] = None,  # Sidecar journal
+    journal_path: Optional[str] = None,  # Sidecar journal (None refuses unless `unjournaled`)
+    unjournaled: bool = False,           # Explicitly curate with no journal (scratch graphs, tests)
 ) -> Dict[str, Any]:  # The journaled op
     """Discharge a proposed collection's flag (ae3464fc: the explicit human
     act the actor criterion waits for when capture ran hands-off)."""
@@ -260,7 +262,7 @@ async def confirm_collection(
         queue, graph_id,
         updates=[{"id": coll_id, "properties": {"status": "confirmed",
                                                 "actor": actor}}],
-        journal_path=journal_path, actor=actor,
+        journal_path=journal_path, unjournaled=unjournaled, actor=actor,
         args={"act": "confirm", "collection_id": coll_id})
 
 
@@ -270,7 +272,8 @@ async def retire_collection(
     coll_id: str,        # Collection node id to retire (or restore)
     actor: str,          # The retiring human (attribution)
     reason: str = "",    # Why (journaled; e.g. re-downloaded as a fresh collection)
-    journal_path: Optional[str] = None,  # Sidecar journal
+    journal_path: Optional[str] = None,  # Sidecar journal (None refuses unless `unjournaled`)
+    unjournaled: bool = False,           # Explicitly curate with no journal (scratch graphs, tests)
     unretire: bool = False,  # Restore a retired collection to confirmed
 ) -> Dict[str, Any]:  # The journaled op
     """Retire a Collection as a journaled FACT (ruling a7617bd4, item eaefebd2): status
@@ -283,7 +286,7 @@ async def retire_collection(
     return await journal_curation(
         queue, graph_id,
         updates=[{"id": coll_id, "properties": props}],
-        journal_path=journal_path, actor=actor,
+        journal_path=journal_path, unjournaled=unjournaled, actor=actor,
         args={"act": "unretire-collection" if unretire else "retire-collection",
               "collection_id": coll_id, "reason": reason or ""})
 
@@ -301,7 +304,8 @@ async def rename_collection(
     coll_id: str,        # Collection node id to rename
     new_title: str,      # The new title — an EXISTING title makes this a MERGE
     actor: str,          # The renaming human (attribution)
-    journal_path: Optional[str] = None,  # Sidecar journal
+    journal_path: Optional[str] = None,  # Sidecar journal (None refuses unless `unjournaled`)
+    unjournaled: bool = False,           # Explicitly curate with no journal (scratch graphs, tests)
 ) -> str:  # The surviving collection's node id
     """Rename a collection — which IS merge when the new title already exists.
 
@@ -314,21 +318,23 @@ async def rename_collection(
     members and stay true under rename (same work, new name); a merge of two
     ordered collections keeps the survivor's STARTS_WITH and leaves the moved
     chain as an unordered tail until a reorder heals it."""
-    members = await collection_members(queue, graph_id, coll_id)
-    ordered, _ = await collection_order(queue, graph_id, coll_id,
-                                        [m for m, _ in members])
-    new = CollectionNode(title=new_title, status="confirmed", actor=actor)
-    if new.id == coll_id:
-        return coll_id  # normalization-equal title: nothing to move
-    edges = [make_edge(m, new.id, SpineRelations.PART_OF) for m, _ in members]
-    if ordered:
-        edges.append(make_edge(new.id, ordered[0], SpineRelations.STARTS_WITH))
-    await journal_curation(
-        queue, graph_id,
-        delete_node_ids=[coll_id],
-        nodes=[new.to_graph_node()], edges=edges,
-        journal_path=journal_path, actor=actor,
-        args={"act": "rename", "from": coll_id, "to": new.id, "title": new_title})
+    async with write_window(queue, graph_id, journal_path, unjournaled=unjournaled,
+                            what="collection-curation rename"):  # plan on the healed db, then write
+        members = await collection_members(queue, graph_id, coll_id)
+        ordered, _ = await collection_order(queue, graph_id, coll_id,
+                                            [m for m, _ in members])
+        new = CollectionNode(title=new_title, status="confirmed", actor=actor)
+        if new.id == coll_id:
+            return coll_id  # normalization-equal title: nothing to move
+        edges = [make_edge(m, new.id, SpineRelations.PART_OF) for m, _ in members]
+        if ordered:
+            edges.append(make_edge(new.id, ordered[0], SpineRelations.STARTS_WITH))
+        await journal_curation(
+            queue, graph_id,
+            delete_node_ids=[coll_id],
+            nodes=[new.to_graph_node()], edges=edges,
+            journal_path=journal_path, unjournaled=unjournaled, actor=actor,
+            args={"act": "rename", "from": coll_id, "to": new.id, "title": new_title})
     return new.id
 
 
@@ -339,7 +345,8 @@ async def refile_members(
     from_coll_id: str,       # Collection they leave
     to_title: str,           # Collection they join (create-or-attach by title)
     actor: str,              # The refiling human (attribution)
-    journal_path: Optional[str] = None,  # Sidecar journal
+    journal_path: Optional[str] = None,  # Sidecar journal (None refuses unless `unjournaled`)
+    unjournaled: bool = False,           # Explicitly curate with no journal (scratch graphs, tests)
 ) -> str:  # The destination collection's node id
     """Move members between collections (the Supernova carve-out: select
     episodes out of a coarse archive proposal into their true series).
@@ -358,7 +365,7 @@ async def refile_members(
         queue, graph_id,
         delete_edge_ids=dels,
         nodes=[dst.to_graph_node()], edges=edges,
-        journal_path=journal_path, actor=actor,
+        journal_path=journal_path, unjournaled=unjournaled, actor=actor,
         args={"act": "refile", "from": from_coll_id, "to": dst.id,
               "title": to_title, "members": len(member_ids)})
     return dst.id
@@ -370,7 +377,8 @@ async def set_collection_order(
     coll_id: str,                  # Collection node id
     ordered_member_ids: List[str],  # The full member order to materialize
     actor: str,                    # The ordering human (attribution)
-    journal_path: Optional[str] = None,  # Sidecar journal
+    journal_path: Optional[str] = None,  # Sidecar journal (None refuses unless `unjournaled`)
+    unjournaled: bool = False,           # Explicitly curate with no journal (scratch graphs, tests)
 ) -> Dict[str, Any]:  # The journaled op
     """Materialize (or repair) a collection's order — the curation op ae3464fc
     reserved sequence for.
@@ -379,22 +387,24 @@ async def set_collection_order(
     `collection_order`, PLUS any stray NEXT edges among the members — the
     unordered tails a merge leaves), then lays the full fractal spine over the
     given order (`spine_edges`; the PART_OF re-adds verify-collide)."""
-    members = set(ordered_member_ids)
-    _, chain_edges = await collection_order(queue, graph_id, coll_id,
-                                            list(members))
-    stray: List[str] = []
-    if members:
-        nq = EdgeQuery(relation_type=SpineRelations.NEXT,
-                       source_ids=sorted(members), project=["id"])
-        nres = await graph_task(queue, graph_id, "query_edges", query=nq.to_dict())
-        stray = [r["id"] for r in (nres.rows or [])]
-    return await journal_curation(
-        queue, graph_id,
-        delete_edge_ids=sorted(set(chain_edges) | set(stray)),
-        edges=spine_edges(coll_id, list(ordered_member_ids)),
-        journal_path=journal_path, actor=actor,
-        args={"act": "set-order", "collection_id": coll_id,
-              "members": len(ordered_member_ids)})
+    async with write_window(queue, graph_id, journal_path, unjournaled=unjournaled,
+                            what="collection-curation set-order"):  # plan on the healed db, then write
+        members = set(ordered_member_ids)
+        _, chain_edges = await collection_order(queue, graph_id, coll_id,
+                                                list(members))
+        stray: List[str] = []
+        if members:
+            nq = EdgeQuery(relation_type=SpineRelations.NEXT,
+                           source_ids=sorted(members), project=["id"])
+            nres = await graph_task(queue, graph_id, "query_edges", query=nq.to_dict())
+            stray = [r["id"] for r in (nres.rows or [])]
+        return await journal_curation(
+            queue, graph_id,
+            delete_edge_ids=sorted(set(chain_edges) | set(stray)),
+            edges=spine_edges(coll_id, list(ordered_member_ids)),
+            journal_path=journal_path, unjournaled=unjournaled, actor=actor,
+            args={"act": "set-order", "collection_id": coll_id,
+                  "members": len(ordered_member_ids)})
 
 
 def structure_entries_from_map(
@@ -535,7 +545,8 @@ async def bind_source_urls(
     graph_id: str,                         # Graph-storage capability id
     bindings: List[Dict[str, Any]],        # [{"source_id", "url", "playlist_title"?, "playlist_file"?}] — one per Source
     actor: str,                            # The binding human (attribution; the playlist file is human-generated data)
-    journal_path: Optional[str] = None,    # Sidecar journal
+    journal_path: Optional[str] = None,    # Sidecar journal (None refuses unless `unjournaled`)
+    unjournaled: bool = False,             # Explicitly curate with no journal (scratch graphs, tests)
     collection_id: Optional[str] = None,   # The Collection the bindings lie over (semantic summary only)
 ) -> Dict[str, Any]:  # The journaled op
     """Bind each Source's PUBLIC URL — the time-addressable watch page a rendering links
@@ -558,7 +569,7 @@ async def bind_source_urls(
                 evidence[k] = b[k]
         updates.append({"id": sid, "properties": {"public_url": url, "public_url_evidence": evidence}})
     return await journal_curation(
-        queue, graph_id, updates=updates, journal_path=journal_path, actor=actor,
+        queue, graph_id, updates=updates, journal_path=journal_path, unjournaled=unjournaled, actor=actor,
         args={"act": "bind-source-urls", "collection_id": collection_id,
               "sources": len(updates)})
 
@@ -568,7 +579,8 @@ async def bind_source_dates(
     graph_id: str,                         # Graph-storage capability id
     bindings: List[Dict[str, Any]],        # [{"source_id", "published_at"?, "published_at_evidence"?, "recorded_at"?, "recorded_at_precision"?, "recorded_at_evidence"?}]
     actor: str,                            # The binding human, or the human who ran the metadata refresh (attribution)
-    journal_path: Optional[str] = None,    # Sidecar journal
+    journal_path: Optional[str] = None,    # Sidecar journal (None refuses unless `unjournaled`)
+    unjournaled: bool = False,             # Explicitly curate with no journal (scratch graphs, tests)
     collection_id: Optional[str] = None,   # The Collection the bindings lie over (semantic summary only)
 ) -> Dict[str, Any]:  # The journaled op
     """Bind each Source's DATES — `published_at` (the public upload, an exact ISO day) and
@@ -606,7 +618,7 @@ async def bind_source_dates(
             props["recorded_at_evidence"] = dict(b.get("recorded_at_evidence") or {"kind": "human"})
         updates.append({"id": sid, "properties": props})
     return await journal_curation(
-        queue, graph_id, updates=updates, journal_path=journal_path, actor=actor,
+        queue, graph_id, updates=updates, journal_path=journal_path, unjournaled=unjournaled, actor=actor,
         args={"act": "bind-source-dates", "collection_id": collection_id, "sources": len(updates)})
 
 
@@ -615,7 +627,8 @@ async def declare_structure(
     graph_id: str,                         # Graph-storage capability id
     entries: List[Dict[str, Any]],         # [{"source_id", "structure": {cells}, "evidence": [...]}] — one per member Source
     actor: str,                            # The declaring human (attribution; the map is human-confirmed data)
-    journal_path: Optional[str] = None,    # Sidecar journal
+    journal_path: Optional[str] = None,    # Sidecar journal (None refuses unless `unjournaled`)
+    unjournaled: bool = False,             # Explicitly curate with no journal (scratch graphs, tests)
     collection_id: Optional[str] = None,   # The Collection the map lies over (semantic summary only)
 ) -> Dict[str, Any]:  # The journaled op
     """Declare a SOURCE STRUCTURE MAP: the WORK's own part/chapter structure
@@ -645,7 +658,7 @@ async def declare_structure(
         updates.append({"id": sid, "properties": {
             "work_structure": {**structure, "evidence": list(e.get("evidence") or [])}}})
     return await journal_curation(
-        queue, graph_id, updates=updates, journal_path=journal_path, actor=actor,
+        queue, graph_id, updates=updates, journal_path=journal_path, unjournaled=unjournaled, actor=actor,
         args={"act": "declare-structure", "collection_id": collection_id,
               "sources": len(updates)})
 
@@ -660,7 +673,8 @@ async def add_reference(
     notes_slug: str = "",                  # A notes-graph Note slug this link points at (a cross-work link: resolves to /posts/<slug>/ once born)
     role: str = "related",                 # Open vocabulary; recommended slate: publisher-page · author-post · related-notes · cited-work
     actor: str,                            # The adding human (attribution)
-    journal_path: Optional[str] = None,    # Sidecar journal
+    journal_path: Optional[str] = None,    # Sidecar journal (None refuses unless `unjournaled`)
+    unjournaled: bool = False,             # Explicitly curate with no journal (scratch graphs, tests)
 ) -> Dict[str, Any]:  # The journaled op, plus "reference_id"
     """Attach a HUMAN-ADDED RESOURCE LINK to a Source as a `Reference` NODE (ruling
     a7ca900d (3), item ae103970). A link nothing in the audio names — a publisher page,
@@ -683,7 +697,7 @@ async def add_reference(
                            "notes_slug": notes_slug, "role": role, "added_by": actor}}
     edge = make_edge(source_id, ref_id, "HAS_REFERENCE")
     op = await journal_curation(
-        queue, graph_id, nodes=[node], edges=[edge], journal_path=journal_path, actor=actor,
+        queue, graph_id, nodes=[node], edges=[edge], journal_path=journal_path, unjournaled=unjournaled, actor=actor,
         args={"act": "add-reference", "source_id": source_id, "reference_id": ref_id, "role": role})
     op["reference_id"] = ref_id
     return op
@@ -695,12 +709,13 @@ async def retract_reference(
     reference_id: str,                     # The Reference node to retract
     *,
     actor: str,                            # The retracting human (attribution)
-    journal_path: Optional[str] = None,    # Sidecar journal
+    journal_path: Optional[str] = None,    # Sidecar journal (None refuses unless `unjournaled`)
+    unjournaled: bool = False,             # Explicitly curate with no journal (scratch graphs, tests)
 ) -> Dict[str, Any]:  # The journaled op
     """Retract a `Reference` node — the compensating act for `add_reference` (the node
     delete cascades its HAS_REFERENCE edge). A link that MOVED is retracted and re-added:
     a new target is a new identity. Rides `journal_curation` (act `retract-reference`);
     an absent node is a tolerated no-op under replay."""
     return await journal_curation(
-        queue, graph_id, delete_node_ids=[reference_id], journal_path=journal_path, actor=actor,
+        queue, graph_id, delete_node_ids=[reference_id], journal_path=journal_path, unjournaled=unjournaled, actor=actor,
         args={"act": "retract-reference", "reference_id": reference_id})
