@@ -128,9 +128,9 @@ async def reference_retract(ctx):
 
 CURATE = ("collection-curation",)
 STEPS = [
-    ProofStep("emit_a", emit_a, ("source-emission", "derivation"), retried=True),
+    ProofStep("emit_a", emit_a, ("source-emission", "derivation"), unit=True, retried=True),
     ProofStep("emit_a_again", emit_a, ()),  # a re-emission over what is there: no change
-    ProofStep("emit_b", emit_b, ("source-emission", "derivation"), retried=True),
+    ProofStep("emit_b", emit_b, ("source-emission", "derivation"), unit=True, retried=True),
     ProofStep("declare", declare, ("collection-declaration",), retried=True),
     ProofStep("land", land, ("transcript-landing",), retried=True),
     ProofStep("confirm", confirm, CURATE),
@@ -157,15 +157,11 @@ def test_every_transcription_verb_is_proven_by_a_step(uncrashed):
     assert all(c for s, c in zip(STEPS, uncrashed["counts"]) if s.ops)
 
 
-# FINDING 249298fd: an emission's Derivation is planned from what THIS run added, so a crash between
-# the emission's op and its Derivation loses the Derivation (the re-run adds nothing) -- strict, so
-# the fix flips these to failures and their marks come off
-LOST_DERIVATION = {("after_append", 1), ("after_apply", 1)}
+# The emission and its Derivation are one atomic unit (ruling 3b76b63c, closing FINDING 249298fd): a
+# crash at any boundary leaves both or neither, so every variant heals to the uncrashed journal
 
 
-@pytest.mark.parametrize("variant", [
-    pytest.param(v, marks=pytest.mark.xfail(strict=True, reason="FINDING 249298fd")) if v in LOST_DERIVATION
-    else v for v in crash_variants(STEPS)], ids=lambda v: f"{v[0]}@{v[1]}")
+@pytest.mark.parametrize("variant", crash_variants(STEPS), ids=lambda v: f"{v[0]}@{v[1]}")
 def test_a_crashed_verb_heals_to_the_uncrashed_run(tmp_path, uncrashed, variant):
     crashed = run_proof(tmp_path, MANIFESTS, STEPS, variant)
     assert crashed["counts"] == uncrashed["counts"]

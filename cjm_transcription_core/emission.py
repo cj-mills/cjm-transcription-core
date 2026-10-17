@@ -109,10 +109,11 @@ async def emit_source_graph(
     """
     chain = list(chain or [])
     nodes, edges, ids = build_source_emission(src, transcriber_config_hashes, chain=chain)
-    # The emission and the Derivation it plans from what the emission added: one unit of work
-    # (ruling 6683f49e (1)) -- the second op is planned on the db the first left.
+    # The emission and the Derivation planned from its own adds: ONE atomic unit (ruling
+    # 3b76b63c) -- the Derivation is planned from the emission's plan (its absent wires), and a
+    # crash leaves both or neither, so a retry re-plans both (a healed emission would add nothing).
     async with write_window(queue, graph_id, journal_path, unjournaled=unjournaled,
-                            what="source-emission"):
+                            what="source-emission", unit=True):
         res = await journal_extend(queue, graph_id, nodes, edges,
                                    journal_path=journal_path, unjournaled=unjournaled,
                                    verb="source-emission",
